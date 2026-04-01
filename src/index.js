@@ -1,12 +1,12 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { relative } from 'node:path';
+import { relative, resolve } from 'node:path';
 import { scanFiles } from './parser/file-scanner.js';
 import { parseLitComponents } from './parser/lit-parser.js';
 import { buildGraph } from './graph/graph-builder.js';
 import { generateHtml } from './output/html-generator.js';
 
 /**
- * Main orchestrator: scan → parse → graph → render.
+ * Main orchestrator: scan → parse → graph → [analyze] → render.
  *
  * @param {OrchestrateOptions} options
  */
@@ -17,6 +17,10 @@ export async function orchestrate(options) {
     output = 'lit-graph.html',
     exclude = ['**/node_modules/**', '**/dist/**', '**/*.d.ts'],
     title = 'Lit Component Graph',
+    analyze = false,
+    ollamaUrl = 'http://10.0.0.15:11434',
+    model = 'qwen3:32b',
+    cacheDir,
   } = options;
 
   // 1. Scan for files.
@@ -54,6 +58,37 @@ export async function orchestrate(options) {
   const graphData = buildGraph(allComponents, directory);
   console.log(`\n  Graph: ${graphData.nodes.length} nodes, ${graphData.edges.length} edges`);
 
+  // 3.5 — Optional LLM-powered architectural analysis.
+  if (analyze) {
+    const { extractArchSignals } = await import('./analysis/arch-signals.js');
+    const { analyzeWithLlm } = await import('./analysis/llm-client.js');
+    const { applyLlmGrouping } = await import('./graph/graph-builder.js');
+
+    console.log('\n  Running architectural analysis…');
+    const archSignals = extractArchSignals(allComponents, graphData.edges, directory);
+    console.log(`    Routes: ${archSignals.routes.length}`);
+    console.log(`    Service imports: ${archSignals.serviceImports.length}`);
+    console.log(`    Shared components: ${archSignals.sharedComponents.length}`);
+    console.log(`    Path hints: ${archSignals.pathHints.length}`);
+
+    console.log(`\n  Querying ${model} via Ollama…`);
+    const resolvedCacheDir = cacheDir || resolve(directory, '.lit-graph-cache');
+    const llmGrouping = await analyzeWithLlm(graphData, archSignals, {
+      ollamaUrl,
+      model,
+      timeout: 300000,
+      cacheDir: resolvedCacheDir,
+      rootDir: directory,
+    });
+
+    console.log(`    LLM assigned ${llmGrouping.groups.length} groups:`);
+    for (const group of llmGrouping.groups) {
+      console.log(`      ${group.name} (${group.components.length}) — ${group.description}`);
+    }
+
+    applyLlmGrouping(graphData, llmGrouping);
+  }
+
   // 4. Generate HTML.
   const html = generateHtml(graphData, { title });
   await writeFile(output, html, 'utf-8');
@@ -68,4 +103,8 @@ export async function orchestrate(options) {
  * @property {string} [output]
  * @property {string[]} [exclude]
  * @property {string} [title]
+ * @property {boolean} [analyze]
+ * @property {string} [ollamaUrl]
+ * @property {string} [model]
+ * @property {string} [cacheDir]
  */

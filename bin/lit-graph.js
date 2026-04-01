@@ -13,6 +13,9 @@ program
   .option('-o, --output <file>', 'Output HTML file', 'lit-graph.html')
   .option('-e, --exclude <pattern...>', 'Glob patterns to exclude')
   .option('-t, --title <title>', 'Graph title', 'Lit Component Graph')
+  .option('-a, --analyze', 'Enable LLM-powered architectural grouping via Ollama')
+  .option('--ollama-url <url>', 'Ollama server URL', 'http://10.0.0.15:11434')
+  .option('--model <name>', 'Ollama model name', 'qwen3:32b')
   .action(async (directory, opts) => {
     try {
       await orchestrate({
@@ -21,6 +24,9 @@ program
         output: resolve(opts.output),
         exclude: opts.exclude || ['**/node_modules/**', '**/dist/**', '**/*.d.ts'],
         title: opts.title,
+        analyze: opts.analyze || false,
+        ollamaUrl: opts.ollamaUrl,
+        model: opts.model,
       });
     } catch (err) {
       console.error('Error:', err.message);

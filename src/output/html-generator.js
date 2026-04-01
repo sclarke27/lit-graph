@@ -21,6 +21,9 @@ export function generateHtml(graphData, options = {}) {
     };
   }
 
+  const groupDescriptions = graphData.groupDescriptions || {};
+  const isLlmGrouped = graphData.isLlmGrouped || false;
+
   const cyGroupNodes = compGroups.map((g) => ({
     data: {
       id: 'group:' + g,
@@ -29,6 +32,7 @@ export function generateHtml(graphData, options = {}) {
       isGroup: true,
       childCount: groupMeta[g].count,
       childTags: groupMeta[g].tags,
+      description: groupDescriptions[g] || '',
     },
   }));
 
@@ -350,6 +354,7 @@ export function generateHtml(graphData, options = {}) {
 </div>
 
 <div id="stats"></div>
+${isLlmGrouped ? '<div style="position:absolute;top:52px;right:352px;z-index:10;font-size:11px;color:#818cf8;background:#1e2130;padding:3px 8px;border-radius:4px;border:1px solid rgba(99,102,241,0.3)">AI-grouped</div>' : ''}
 
 <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
 <script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
@@ -1000,6 +1005,9 @@ export function generateHtml(graphData, options = {}) {
     var h = '';
     h += '<h2 style="color:' + (colors.text || '#e2e8f0') + '">' + esc(d.rawLabel || d.label) + '</h2>';
     h += '<div class="class-name">' + d.childCount + ' components</div>';
+    if (d.description) {
+      h += '<div class="file-path" style="margin-top:4px;color:#94a3b8">' + esc(d.description) + '</div>';
+    }
     h += '<div class="empty-msg" style="margin-top:4px">Double-click to ' + (d.collapsed ? 'expand' : 'collapse') + '</div>';
 
     h += '<div style="margin-top:16px"><div class="section-title">Components</div>';

@@ -192,11 +192,46 @@ export function buildGraph(components, rootDir) {
 }
 
 /**
+ * Override componentGroup on all nodes using LLM-assigned grouping.
+ * Replaces the default root-subtree grouping with semantically
+ * meaningful groups from the LLM analysis.
+ *
+ * @param {GraphData} graphData - Mutated in place.
+ * @param {import('../analysis/llm-client.js').LlmGrouping} llmGrouping
+ */
+export function applyLlmGrouping(graphData, llmGrouping) {
+  const tagToGroup = new Map();
+  for (const group of llmGrouping.groups) {
+    for (const tag of group.components) {
+      tagToGroup.set(tag, group.name);
+    }
+  }
+
+  for (const node of graphData.nodes) {
+    node.componentGroup = tagToGroup.get(node.tagName) || 'Uncategorized';
+  }
+
+  graphData.componentGroups = [...new Set(
+    graphData.nodes.map((n) => n.componentGroup),
+  )].sort();
+
+  graphData.groupDescriptions = {};
+  for (const group of llmGrouping.groups) {
+    graphData.groupDescriptions[group.name] = group.description;
+  }
+
+  graphData.isLlmGrouped = true;
+}
+
+/**
  * @typedef {object} GraphData
  * @property {GraphNode[]} nodes
  * @property {GraphEdge[]} edges
  * @property {number} maxDepth
  * @property {string[]} directoryGroups
+ * @property {string[]} componentGroups
+ * @property {Object<string, string>} [groupDescriptions]
+ * @property {boolean} [isLlmGrouped]
  */
 
 /**
