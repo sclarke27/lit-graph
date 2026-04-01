@@ -1,13 +1,21 @@
+import { dirname, relative, sep } from 'node:path';
+
 /**
  * Build a directed graph from parsed Lit component metadata.
  *
  * Nodes = custom elements. Edges = "parent renders child in its template."
  * Each edge is annotated with the prop/event bindings used.
  *
+ * Also computes:
+ *  - directoryGroup per node (folder relative to the scan root)
+ *  - depth per node (BFS distance from nearest root)
+ *  - list of unique directory groups for the UI
+ *
  * @param {import('../parser/lit-parser.js').ComponentInfo[]} components
+ * @param {string} [rootDir] - Scan root directory for relative path grouping.
  * @returns {GraphData}
  */
-export function buildGraph(components) {
+export function buildGraph(components, rootDir) {
   // Index components by tag name for fast lookup.
   /** @type {Map<string, import('../parser/lit-parser.js').ComponentInfo>} */
   const byTag = new Map();
@@ -23,6 +31,10 @@ export function buildGraph(components) {
   // Track which tags appear as children (to classify roots vs leaves).
   const childTags = new Set();
   const parentTags = new Set();
+
+  // Adjacency list for BFS depth computation.
+  /** @type {Map<string, string[]>} */
+  const childrenOf = new Map();
 
   for (const comp of components) {
     if (!comp.tagName) continue;
@@ -48,9 +60,12 @@ export function buildGraph(components) {
       for (const e of usage.eventBindings) entry.eventBindings.add(e);
     }
 
+    if (!childrenOf.has(comp.tagName)) childrenOf.set(comp.tagName, []);
+
     for (const [childTag, bindings] of childMap) {
       parentTags.add(comp.tagName);
       childTags.add(childTag);
+      childrenOf.get(comp.tagName).push(childTag);
 
       edges.push({
         source: comp.tagName,
@@ -61,7 +76,42 @@ export function buildGraph(components) {
     }
   }
 
-  // Build nodes with classification.
+  // BFS from all roots to compute depth.
+  /** @type {Map<string, number>} */
+  const depthMap = new Map();
+  const roots = [];
+
+  for (const comp of components) {
+    if (!comp.tagName) continue;
+    const isChild = childTags.has(comp.tagName);
+    if (!isChild) {
+      roots.push(comp.tagName);
+      depthMap.set(comp.tagName, 0);
+    }
+  }
+
+  const queue = [...roots];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    const currentDepth = depthMap.get(current);
+    const children = childrenOf.get(current) || [];
+    for (const child of children) {
+      if (!depthMap.has(child)) {
+        depthMap.set(child, currentDepth + 1);
+        queue.push(child);
+      }
+    }
+  }
+
+  // Compute max depth for the UI slider.
+  let maxDepth = 0;
+  for (const d of depthMap.values()) {
+    if (d > maxDepth) maxDepth = d;
+  }
+
+  // Compute directory groups from file paths.
+  const directoryGroups = new Set();
+
   /** @type {GraphNode[]} */
   const nodes = components
     .filter((c) => c.tagName)
@@ -74,6 +124,15 @@ export function buildGraph(components) {
       else if (isParent && isChild) nodeType = 'container';
       else nodeType = 'leaf';
 
+      // Directory group: the folder path relative to the scan root.
+      let dirGroup = '';
+      if (rootDir) {
+        const relPath = relative(rootDir, comp.filePath).split(sep).join('/');
+        const relDir = dirname(relPath);
+        dirGroup = relDir === '.' ? '(root)' : relDir;
+      }
+      directoryGroups.add(dirGroup);
+
       return {
         id: comp.tagName,
         tagName: comp.tagName,
@@ -83,16 +142,25 @@ export function buildGraph(components) {
         internalState: comp.internalState,
         eventsDispatched: comp.eventsDispatched,
         nodeType,
+        directoryGroup: dirGroup,
+        depth: depthMap.get(comp.tagName) ?? 0,
       };
     });
 
-  return { nodes, edges };
+  return {
+    nodes,
+    edges,
+    maxDepth,
+    directoryGroups: [...directoryGroups].sort(),
+  };
 }
 
 /**
  * @typedef {object} GraphData
  * @property {GraphNode[]} nodes
  * @property {GraphEdge[]} edges
+ * @property {number} maxDepth
+ * @property {string[]} directoryGroups
  */
 
 /**
@@ -105,6 +173,8 @@ export function buildGraph(components) {
  * @property {{ name: string, type: string|null }[]} internalState
  * @property {string[]} eventsDispatched
  * @property {'root'|'container'|'leaf'} nodeType
+ * @property {string} directoryGroup
+ * @property {number} depth
  */
 
 /**

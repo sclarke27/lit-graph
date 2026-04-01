@@ -51,7 +51,7 @@ export async function orchestrate(options) {
   }
 
   // 3. Build graph.
-  const graphData = buildGraph(allComponents);
+  const graphData = buildGraph(allComponents, directory);
   console.log(`\n  Graph: ${graphData.nodes.length} nodes, ${graphData.edges.length} edges`);
 
   // 4. Generate HTML.
