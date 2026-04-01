@@ -9,14 +9,26 @@
 export function generateHtml(graphData, options = {}) {
   const title = options.title || 'Lit Component Graph';
 
-  // Convert graph data to Cytoscape elements format.
-  // Include compound (group) nodes for directory clustering.
   const dirGroups = graphData.directoryGroups || [];
+
+  // Pre-compute group metadata: child count, child tags list.
+  const groupMeta = {};
+  for (const g of dirGroups) {
+    const children = graphData.nodes.filter((n) => n.directoryGroup === g);
+    groupMeta[g] = {
+      count: children.length,
+      tags: children.map((c) => c.tagName),
+    };
+  }
+
   const cyGroupNodes = dirGroups.map((g) => ({
     data: {
       id: 'group:' + g,
-      label: g,
+      label: g + ' (' + groupMeta[g].count + ')',
+      rawLabel: g,
       isGroup: true,
+      childCount: groupMeta[g].count,
+      childTags: groupMeta[g].tags,
     },
   }));
 
@@ -35,7 +47,6 @@ export function generateHtml(graphData, options = {}) {
       eventCount: n.eventsDispatched.length,
       directoryGroup: n.directoryGroup || '',
       depth: n.depth ?? 0,
-      // parent is set dynamically by the clustering toggle
     },
   }));
 
@@ -77,11 +88,7 @@ export function generateHtml(graphData, options = {}) {
     overflow: hidden;
   }
 
-  /* ── Graph canvas ─────────────────────────────────────────── */
-  #cy {
-    flex: 1;
-    min-width: 0;
-  }
+  #cy { flex: 1; min-width: 0; }
 
   /* ── Toolbar ──────────────────────────────────────────────── */
   #toolbar {
@@ -115,11 +122,7 @@ export function generateHtml(graphData, options = {}) {
     color: #60a5fa;
   }
 
-  #toolbar input[type="text"] {
-    width: 180px;
-    cursor: text;
-  }
-
+  #toolbar input[type="text"] { width: 180px; cursor: text; }
   #toolbar input[type="text"]::placeholder { color: #64748b; }
 
   .toolbar-sep {
@@ -129,7 +132,6 @@ export function generateHtml(graphData, options = {}) {
     margin: 0 2px;
   }
 
-  /* ── Depth slider ─────────────────────────────────────────── */
   .depth-control {
     display: flex;
     align-items: center;
@@ -141,10 +143,7 @@ export function generateHtml(graphData, options = {}) {
     font-size: 13px;
   }
 
-  .depth-control.disabled {
-    opacity: 0.4;
-    pointer-events: none;
-  }
+  .depth-control.disabled { opacity: 0.4; pointer-events: none; }
 
   .depth-control input[type="range"] {
     width: 80px;
@@ -155,11 +154,28 @@ export function generateHtml(graphData, options = {}) {
     padding: 0;
   }
 
-  .depth-control span {
-    min-width: 14px;
-    text-align: center;
+  .depth-control span { min-width: 14px; text-align: center; color: #94a3b8; }
+
+  /* ── Breadcrumb ───────────────────────────────────────────── */
+  #breadcrumb {
+    position: absolute;
+    top: 52px;
+    left: 12px;
+    z-index: 10;
+    display: none;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
     color: #94a3b8;
   }
+
+  #breadcrumb span { cursor: default; }
+  #breadcrumb a {
+    color: #60a5fa;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  #breadcrumb a:hover { text-decoration: underline; }
 
   /* ── Sidebar ──────────────────────────────────────────────── */
   #sidebar {
@@ -188,12 +204,7 @@ export function generateHtml(graphData, options = {}) {
     word-break: break-all;
   }
 
-  #sidebar .class-name {
-    font-size: 13px;
-    color: #64748b;
-    margin-top: 2px;
-  }
-
+  #sidebar .class-name { font-size: 13px; color: #64748b; margin-top: 2px; }
   #sidebar .file-path {
     font-size: 12px;
     color: #475569;
@@ -227,10 +238,7 @@ export function generateHtml(graphData, options = {}) {
     justify-content: space-between;
   }
 
-  .prop-type {
-    color: #64748b;
-    font-size: 12px;
-  }
+  .prop-type { color: #64748b; font-size: 12px; }
 
   .badge {
     display: inline-block;
@@ -253,11 +261,27 @@ export function generateHtml(graphData, options = {}) {
     color: #c084fc;
   }
 
-  .empty-msg {
-    font-size: 13px;
-    color: #475569;
-    font-style: italic;
+  .empty-msg { font-size: 13px; color: #475569; font-style: italic; }
+
+  /* ── Group sidebar content ────────────────────────────────── */
+  .group-tag-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
   }
+
+  .group-tag-list li {
+    font-size: 13px;
+    font-family: 'SF Mono', Consolas, monospace;
+    padding: 3px 8px;
+    background: #1e2130;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+
+  .group-tag-list li:hover { background: #2d3148; }
 
   /* ── Legend ────────────────────────────────────────────────── */
   #legend {
@@ -271,19 +295,9 @@ export function generateHtml(graphData, options = {}) {
     z-index: 10;
   }
 
-  .legend-item {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
 
-  .legend-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-  }
-
-  /* ── Stats ────────────────────────────────────────────────── */
   #stats {
     position: absolute;
     bottom: 12px;
@@ -303,9 +317,10 @@ export function generateHtml(graphData, options = {}) {
 <div id="toolbar">
   <input type="text" id="search" placeholder="Search components…" autocomplete="off" />
   <div class="toolbar-sep"></div>
-  <button id="btn-cluster" title="Group components by directory">Clusters</button>
-  <div class="depth-control disabled" id="depth-wrap">
-    <span>Depth</span>
+  <button id="btn-cluster" title="Group components by directory (double-click group to expand)">Clusters</button>
+  <button id="btn-focus" title="Focus on selected component's neighborhood" disabled>Focus</button>
+  <button id="btn-depth" title="Toggle depth filtering">Depth</button>
+  <div class="depth-control" id="depth-wrap" style="display:none">
     <input type="range" id="depth-slider" min="0" max="${maxDepth}" value="${maxDepth}" />
     <span id="depth-value">${maxDepth}</span>
   </div>
@@ -314,6 +329,12 @@ export function generateHtml(graphData, options = {}) {
   <button id="btn-reset" title="Reset layout">Reset</button>
   <button id="btn-png" title="Export as PNG">PNG</button>
   <button id="btn-toggle" title="Toggle sidebar">◀</button>
+</div>
+
+<div id="breadcrumb">
+  <a id="bc-back">All components</a>
+  <span>›</span>
+  <span id="bc-current"></span>
 </div>
 
 <div id="sidebar">
@@ -336,29 +357,26 @@ export function generateHtml(graphData, options = {}) {
 (function () {
   'use strict';
 
-  // Register dagre layout extension.
-  if (typeof cytoscape !== 'undefined' && typeof cytoscapeDagre !== 'undefined') {
-    cytoscape.use(cytoscapeDagre);
+  if (typeof cytoscape !== 'undefined') {
+    if (typeof cytoscapeDagre !== 'undefined') cytoscape.use(cytoscapeDagre);
   }
 
   var MAX_DEPTH = ${maxDepth};
-
   var COLORS = {
     root:      { bg: '#1e3a5f', border: '#60a5fa', text: '#60a5fa' },
     container: { bg: '#134e4a', border: '#5eead4', text: '#5eead4' },
     leaf:      { bg: '#14532d', border: '#86efac', text: '#86efac' },
   };
 
-  // Deterministic colors for directory clusters.
   var GROUP_PALETTE = [
-    { bg: 'rgba(99,102,241,0.08)', border: 'rgba(99,102,241,0.35)', text: '#818cf8' },
-    { bg: 'rgba(244,114,182,0.08)', border: 'rgba(244,114,182,0.35)', text: '#f472b6' },
-    { bg: 'rgba(251,191,36,0.08)',  border: 'rgba(251,191,36,0.35)',  text: '#fbbf24' },
-    { bg: 'rgba(52,211,153,0.08)',  border: 'rgba(52,211,153,0.35)',  text: '#34d399' },
-    { bg: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.35)', text: '#f87171' },
-    { bg: 'rgba(56,189,248,0.08)',  border: 'rgba(56,189,248,0.35)',  text: '#38bdf8' },
-    { bg: 'rgba(167,139,250,0.08)', border: 'rgba(167,139,250,0.35)', text: '#a78bfa' },
-    { bg: 'rgba(253,186,116,0.08)', border: 'rgba(253,186,116,0.35)', text: '#fdba74' },
+    { bg: 'rgba(99,102,241,0.12)',  border: 'rgba(99,102,241,0.5)',  text: '#818cf8' },
+    { bg: 'rgba(244,114,182,0.12)', border: 'rgba(244,114,182,0.5)', text: '#f472b6' },
+    { bg: 'rgba(251,191,36,0.12)',  border: 'rgba(251,191,36,0.5)',  text: '#fbbf24' },
+    { bg: 'rgba(52,211,153,0.12)',  border: 'rgba(52,211,153,0.5)',  text: '#34d399' },
+    { bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.5)', text: '#f87171' },
+    { bg: 'rgba(56,189,248,0.12)',  border: 'rgba(56,189,248,0.5)',  text: '#38bdf8' },
+    { bg: 'rgba(167,139,250,0.12)', border: 'rgba(167,139,250,0.5)', text: '#a78bfa' },
+    { bg: 'rgba(253,186,116,0.12)', border: 'rgba(253,186,116,0.5)', text: '#fdba74' },
   ];
 
   var allElements = ${allElements};
@@ -367,9 +385,21 @@ export function generateHtml(graphData, options = {}) {
   var clusterEnabled = false;
   var depthFilterEnabled = false;
   var currentMaxDepth = MAX_DEPTH;
+  var focusTarget = null;       // tag name of focused component, or null
+  var selectedNode = null;      // currently selected node id
+  var expandedGroups = {};      // track which groups are expanded
+
+  // Precompute group color map.
+  var groupColorMap = {};
+  var gIdx = 0;
+  allElements.forEach(function (el) {
+    if (el.data.isGroup) {
+      groupColorMap[el.data.id] = GROUP_PALETTE[gIdx % GROUP_PALETTE.length];
+      gIdx++;
+    }
+  });
 
   // ── Build Cytoscape ────────────────────────────────────────
-  // Start without group nodes (clustering off by default).
   var initialElements = allElements.filter(function (el) {
     return !el.data.isGroup;
   });
@@ -378,7 +408,7 @@ export function generateHtml(graphData, options = {}) {
     container: document.getElementById('cy'),
     elements: initialElements,
     style: [
-      // ── Regular nodes ──────────────────────────────────────
+      // Regular component nodes
       {
         selector: 'node[!isGroup]',
         style: {
@@ -403,7 +433,25 @@ export function generateHtml(graphData, options = {}) {
           'transition-duration': '0.15s',
         },
       },
-      // ── Compound (group) nodes ─────────────────────────────
+      // Collapsed group nodes (shown as single summary node)
+      {
+        selector: 'node[?isGroup][?collapsed]',
+        style: {
+          'label': 'data(label)',
+          'text-valign': 'center',
+          'text-halign': 'center',
+          'font-size': '13px',
+          'font-weight': '600',
+          'width': 'label',
+          'height': '50px',
+          'padding': '20px',
+          'shape': 'round-rectangle',
+          'border-width': 2,
+          'border-style': 'dashed',
+          'background-opacity': 0.8,
+        },
+      },
+      // Expanded group nodes (compound parent)
       {
         selector: '$node > node',
         style: {
@@ -414,39 +462,26 @@ export function generateHtml(graphData, options = {}) {
           'font-weight': '600',
           'color': '#94a3b8',
           'text-margin-y': -6,
-          'padding': '20px',
+          'padding': '24px',
           'shape': 'round-rectangle',
-          'background-color': 'rgba(30,33,48,0.5)',
+          'background-color': 'rgba(30,33,48,0.4)',
           'border-width': 1,
           'border-style': 'dashed',
           'border-color': '#2d3148',
-          'background-opacity': 0.5,
         },
       },
-      // Color by node type
+      // Node type colors
       {
         selector: 'node[nodeType="root"]',
-        style: {
-          'background-color': COLORS.root.bg,
-          'border-color': COLORS.root.border,
-          'color': COLORS.root.text,
-        },
+        style: { 'background-color': COLORS.root.bg, 'border-color': COLORS.root.border, 'color': COLORS.root.text },
       },
       {
         selector: 'node[nodeType="container"]',
-        style: {
-          'background-color': COLORS.container.bg,
-          'border-color': COLORS.container.border,
-          'color': COLORS.container.text,
-        },
+        style: { 'background-color': COLORS.container.bg, 'border-color': COLORS.container.border, 'color': COLORS.container.text },
       },
       {
         selector: 'node[nodeType="leaf"]',
-        style: {
-          'background-color': COLORS.leaf.bg,
-          'border-color': COLORS.leaf.border,
-          'color': COLORS.leaf.text,
-        },
+        style: { 'background-color': COLORS.leaf.bg, 'border-color': COLORS.leaf.border, 'color': COLORS.leaf.text },
       },
       // Edges
       {
@@ -470,18 +505,13 @@ export function generateHtml(graphData, options = {}) {
           'text-outline-color': '#0f1117',
         },
       },
-      // Selection / hover
       {
         selector: 'node:active, node:selected',
-        style: {
-          'border-width': 3,
-          'overlay-opacity': 0,
-        },
+        style: { 'border-width': 3, 'overlay-opacity': 0 },
       },
-      // Dimmed state for search / depth filtering
       {
         selector: '.dimmed',
-        style: { 'opacity': 0.15 },
+        style: { 'opacity': 0.1 },
       },
       {
         selector: '.highlighted',
@@ -491,29 +521,65 @@ export function generateHtml(graphData, options = {}) {
         selector: '.depth-hidden',
         style: { 'display': 'none' },
       },
+      {
+        selector: '.focus-hidden',
+        style: { 'display': 'none' },
+      },
     ],
-    layout: {
-      name: 'dagre',
-      rankDir: 'TB',
-      nodeSep: 60,
-      rankSep: 80,
-      padding: 40,
-    },
+    layout: { name: 'dagre', rankDir: 'TB', nodeSep: 60, rankSep: 80, padding: 40 },
     minZoom: 0.2,
     maxZoom: 3,
     wheelSensitivity: 0.3,
   });
 
-  // Apply group colors dynamically to compound nodes.
-  var groupColorMap = {};
-  allElements.forEach(function (el) {
-    if (el.data.isGroup) {
-      var idx = Object.keys(groupColorMap).length % GROUP_PALETTE.length;
-      groupColorMap[el.data.id] = GROUP_PALETTE[idx];
-    }
-  });
+  // ── Layout helpers ─────────────────────────────────────────
+  function reLayout(animate) {
+    // Pick layout based on current mode.
+    var hasExpandedGroups = Object.keys(expandedGroups).some(function (k) { return expandedGroups[k]; });
+    var opts;
 
-  // ── Stats ──────────────────────────────────────────────────
+    if (clusterEnabled && hasExpandedGroups) {
+      // Expanded compound nodes — dagre handles compound parents.
+      opts = {
+        name: 'dagre',
+        rankDir: 'TB',
+        nodeSep: 60,
+        rankSep: 80,
+        padding: 40,
+        animate: !!animate,
+        animationDuration: 300,
+      };
+    } else if (clusterEnabled) {
+      // All groups collapsed — manually center them.
+      var groupNodes = cy.nodes('[?isGroup]:visible');
+      var cols = Math.ceil(Math.sqrt(groupNodes.length));
+      groupNodes.forEach(function (n, i) {
+        var col = i % cols;
+        var row = Math.floor(i / cols);
+        n.position({ x: col * 250, y: row * 180 });
+      });
+      cy.fit(groupNodes, 80);
+      updateStats();
+      return;
+    } else {
+      // No clustering — dagre hierarchy.
+      opts = {
+        name: 'dagre',
+        rankDir: 'TB',
+        nodeSep: 60,
+        rankSep: 80,
+        padding: 40,
+        animate: !!animate,
+        animationDuration: 300,
+      };
+    }
+
+    var layout = cy.layout(opts);
+    layout.on('layoutstop', function () { cy.fit(undefined, 40); });
+    layout.run();
+    updateStats();
+  }
+
   function updateStats() {
     var visible = cy.nodes('[!isGroup]').filter(function (n) { return n.visible(); });
     var visEdges = cy.edges().filter(function (e) { return e.visible(); });
@@ -522,75 +588,299 @@ export function generateHtml(graphData, options = {}) {
   }
   updateStats();
 
-  // ── Re-layout helper ───────────────────────────────────────
-  function reLayout(animate) {
-    cy.layout({
-      name: 'dagre',
-      rankDir: 'TB',
-      nodeSep: 60,
-      rankSep: 80,
-      padding: 40,
-      animate: !!animate,
-      animationDuration: 300,
-    }).run();
-    updateStats();
-  }
-
-  // ── Clustering toggle ──────────────────────────────────────
+  // ── Clustering: collapsible groups ─────────────────────────
   var btnCluster = document.getElementById('btn-cluster');
 
   btnCluster.addEventListener('click', function () {
     clusterEnabled = !clusterEnabled;
     btnCluster.classList.toggle('active', clusterEnabled);
-    applyClustering();
+    if (clusterEnabled) {
+      enableClustering();
+    } else {
+      disableClustering();
+    }
     reLayout(true);
   });
 
-  function applyClustering() {
-    if (clusterEnabled) {
-      // Add group nodes if not already present.
-      allElements.forEach(function (el) {
-        if (el.data.isGroup && cy.getElementById(el.data.id).length === 0) {
-          cy.add(el);
-          // Apply group color.
-          var colors = groupColorMap[el.data.id];
-          if (colors) {
-            cy.getElementById(el.data.id).style({
-              'background-color': colors.bg,
-              'border-color': colors.border,
-              'color': colors.text,
-            });
-          }
-        }
+  function enableClustering() {
+    // Add all group nodes as collapsed summary nodes.
+    expandedGroups = {};
+    allElements.forEach(function (el) {
+      if (!el.data.isGroup) return;
+      if (cy.getElementById(el.data.id).length > 0) return;
+      var added = cy.add({
+        data: Object.assign({}, el.data, { collapsed: true }),
       });
-      // Assign parent to each component node.
-      cy.nodes('[!isGroup]').forEach(function (n) {
-        var group = n.data('directoryGroup');
-        if (group) {
-          n.move({ parent: 'group:' + group });
-        }
+      applyGroupStyle(added);
+    });
+    // Hide all component nodes — they're inside collapsed groups.
+    cy.nodes('[!isGroup]').addClass('focus-hidden');
+    cy.edges().addClass('focus-hidden');
+    // Add inter-group edges.
+    addGroupEdges();
+  }
+
+  function disableClustering() {
+    expandedGroups = {};
+    // Remove group nodes and group edges.
+    cy.nodes('[?isGroup]').remove();
+    cy.edges('[?isGroupEdge]').remove();
+    // Show all component nodes again.
+    cy.nodes('[!isGroup]').removeClass('focus-hidden');
+    cy.edges('[!isGroupEdge]').removeClass('focus-hidden');
+    // Un-parent everything.
+    cy.nodes('[!isGroup]').forEach(function (n) { n.move({ parent: null }); });
+  }
+
+  function applyGroupStyle(node) {
+    var colors = groupColorMap[node.id()];
+    if (colors) {
+      node.style({
+        'background-color': colors.bg,
+        'border-color': colors.border,
+        'color': colors.text,
       });
-    } else {
-      // Remove parent from all component nodes.
-      cy.nodes('[!isGroup]').forEach(function (n) {
-        n.move({ parent: null });
-      });
-      // Remove group nodes.
-      cy.nodes('[?isGroup]').remove();
     }
   }
 
-  // ── Depth filter toggle + slider ───────────────────────────
+  // Compute edges between groups (how many component edges cross groups).
+  function addGroupEdges() {
+    cy.edges('[?isGroupEdge]').remove();
+    var groupEdges = {};
+    allElements.forEach(function (el) {
+      if (!el.data.source) return; // not an edge
+      if (el.data.isGroupEdge) return;
+      // Find groups for source and target.
+      var srcNode = allElements.find(function (n) { return n.data.id === el.data.source; });
+      var tgtNode = allElements.find(function (n) { return n.data.id === el.data.target; });
+      if (!srcNode || !tgtNode) return;
+      var srcGroup = 'group:' + (srcNode.data.directoryGroup || '');
+      var tgtGroup = 'group:' + (tgtNode.data.directoryGroup || '');
+      if (srcGroup === tgtGroup) return; // same group, skip
+      // Don't add if either group is expanded.
+      if (expandedGroups[srcGroup] || expandedGroups[tgtGroup]) return;
+      var key = srcGroup + '>' + tgtGroup;
+      if (!groupEdges[key]) groupEdges[key] = 0;
+      groupEdges[key]++;
+    });
+    Object.keys(groupEdges).forEach(function (key, i) {
+      var parts = key.split('>');
+      // Only add edge if both group nodes exist and are visible.
+      if (cy.getElementById(parts[0]).length && cy.getElementById(parts[1]).length) {
+        cy.add({
+          data: {
+            id: 'ge' + i,
+            source: parts[0],
+            target: parts[1],
+            label: groupEdges[key] + ' connections',
+            isGroupEdge: true,
+          },
+        });
+      }
+    });
+  }
+
+  // Double-click a collapsed group to expand it.
+  cy.on('dbltap', 'node[?isGroup]', function (evt) {
+    var groupNode = evt.target;
+    var groupId = groupNode.id();
+    var isCollapsed = groupNode.data('collapsed');
+
+    if (isCollapsed) {
+      expandGroup(groupId);
+    } else {
+      collapseGroup(groupId);
+    }
+    reLayout(true);
+  });
+
+  function expandGroup(groupId) {
+    var groupNode = cy.getElementById(groupId);
+    if (!groupNode.length) return;
+    expandedGroups[groupId] = true;
+    groupNode.data('collapsed', false);
+
+    // Show child component nodes and parent them to this group.
+    var rawLabel = groupNode.data('rawLabel');
+    cy.nodes('[!isGroup]').forEach(function (n) {
+      if (n.data('directoryGroup') === rawLabel) {
+        n.removeClass('focus-hidden');
+        n.move({ parent: groupId });
+      }
+    });
+
+    // Show edges between visible nodes.
+    cy.edges('[!isGroupEdge]').forEach(function (e) {
+      var src = cy.getElementById(e.data('source'));
+      var tgt = cy.getElementById(e.data('target'));
+      if (src.visible() && tgt.visible()) {
+        e.removeClass('focus-hidden');
+      }
+    });
+
+    // Rebuild group edges (remove ones connected to this expanded group).
+    addGroupEdges();
+  }
+
+  function collapseGroup(groupId) {
+    var groupNode = cy.getElementById(groupId);
+    if (!groupNode.length) return;
+    expandedGroups[groupId] = false;
+    groupNode.data('collapsed', true);
+
+    var rawLabel = groupNode.data('rawLabel');
+    // Hide child component nodes.
+    cy.nodes('[!isGroup]').forEach(function (n) {
+      if (n.data('directoryGroup') === rawLabel) {
+        n.addClass('focus-hidden');
+        n.move({ parent: null });
+      }
+    });
+
+    // Hide edges connected to now-hidden nodes.
+    cy.edges('[!isGroupEdge]').forEach(function (e) {
+      var src = cy.getElementById(e.data('source'));
+      var tgt = cy.getElementById(e.data('target'));
+      if (!src.visible() || !tgt.visible()) {
+        e.addClass('focus-hidden');
+      }
+    });
+
+    addGroupEdges();
+  }
+
+  // ── Focus mode ─────────────────────────────────────────────
+  var btnFocus = document.getElementById('btn-focus');
+  var breadcrumb = document.getElementById('breadcrumb');
+  var bcBack = document.getElementById('bc-back');
+  var bcCurrent = document.getElementById('bc-current');
+
+  btnFocus.addEventListener('click', function () {
+    if (focusTarget) {
+      exitFocus();
+    } else if (selectedNode) {
+      enterFocus(selectedNode);
+    }
+  });
+
+  bcBack.addEventListener('click', function () {
+    exitFocus();
+  });
+
+  // Also allow Escape to exit focus.
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && focusTarget) {
+      exitFocus();
+    }
+  });
+
+  function enterFocus(nodeId) {
+    var node = cy.getElementById(nodeId);
+    if (!node.length || node.data('isGroup')) return;
+
+    focusTarget = nodeId;
+    btnFocus.textContent = 'Exit Focus';
+    btnFocus.classList.add('active');
+
+    // Show breadcrumb.
+    breadcrumb.style.display = 'flex';
+    bcCurrent.textContent = node.data('label');
+
+    cy.batch(function () {
+      // Get the neighborhood: the node itself + connected edges + connected nodes.
+      var neighborhood = node.closedNeighborhood();
+      // Also include 2nd-degree neighbors for more context.
+      var extended = neighborhood.closedNeighborhood();
+
+      cy.elements().addClass('focus-hidden');
+      extended.removeClass('focus-hidden');
+
+      // If clustered, show parent groups of visible nodes.
+      if (clusterEnabled) {
+        extended.nodes().forEach(function (n) {
+          var parent = n.parent();
+          if (parent.length) parent.removeClass('focus-hidden');
+        });
+      }
+    });
+
+    cy.fit(cy.elements(':visible'), 60);
+    updateStats();
+  }
+
+  function exitFocus() {
+    focusTarget = null;
+    btnFocus.textContent = 'Focus';
+    btnFocus.classList.remove('active');
+    btnFocus.disabled = !selectedNode;
+    breadcrumb.style.display = 'none';
+
+    cy.batch(function () {
+      cy.elements().removeClass('focus-hidden');
+
+      // Re-apply clustering state if active.
+      if (clusterEnabled) {
+        // Hide nodes that belong to collapsed groups.
+        cy.nodes('[!isGroup]').forEach(function (n) {
+          var gId = 'group:' + n.data('directoryGroup');
+          if (!expandedGroups[gId]) {
+            n.addClass('focus-hidden');
+          }
+        });
+        cy.edges('[!isGroupEdge]').forEach(function (e) {
+          var src = cy.getElementById(e.data('source'));
+          var tgt = cy.getElementById(e.data('target'));
+          if (!src.visible() || !tgt.visible()) {
+            e.addClass('focus-hidden');
+          }
+        });
+      }
+
+      // Re-apply depth filter if active.
+      if (depthFilterEnabled) {
+        applyDepthFilter();
+      }
+    });
+
+    reLayout(true);
+  }
+
+  // ── Track selection for Focus button ───────────────────────
+  cy.on('tap', 'node[!isGroup]', function (evt) {
+    selectedNode = evt.target.id();
+    btnFocus.disabled = false;
+    showNodeDetail(evt.target.data());
+  });
+
+  // Click on group node shows group info in sidebar.
+  cy.on('tap', 'node[?isGroup]', function (evt) {
+    var d = evt.target.data();
+    selectedNode = null;
+    btnFocus.disabled = true;
+    showGroupDetail(d);
+  });
+
+  cy.on('tap', function (evt) {
+    if (evt.target === cy) {
+      selectedNode = null;
+      btnFocus.disabled = !!focusTarget; // keep enabled if in focus mode for exit
+      if (focusTarget) btnFocus.disabled = false;
+      else btnFocus.disabled = true;
+      placeholder.style.display = '';
+      detailContent.style.display = 'none';
+    }
+  });
+
+  // ── Depth filter ───────────────────────────────────────────
+  var btnDepth = document.getElementById('btn-depth');
   var depthWrap = document.getElementById('depth-wrap');
   var depthSlider = document.getElementById('depth-slider');
   var depthValue = document.getElementById('depth-value');
 
-  // Click the "Depth" label text to toggle on/off.
-  depthWrap.addEventListener('click', function (e) {
-    // Only toggle if clicking the label, not the slider itself.
-    if (e.target === depthSlider) return;
+  btnDepth.addEventListener('click', function () {
     depthFilterEnabled = !depthFilterEnabled;
-    depthWrap.classList.toggle('disabled', !depthFilterEnabled);
+    btnDepth.classList.toggle('active', depthFilterEnabled);
+    depthWrap.style.display = depthFilterEnabled ? 'flex' : 'none';
     applyDepthFilter();
     reLayout(true);
   });
@@ -604,14 +894,10 @@ export function generateHtml(graphData, options = {}) {
     }
   });
 
-  // Prevent slider clicks from toggling the depth filter.
-  depthSlider.addEventListener('click', function (e) {
-    e.stopPropagation();
-  });
-
   function applyDepthFilter() {
     cy.batch(function () {
       cy.nodes('[!isGroup]').forEach(function (n) {
+        if (n.hasClass('focus-hidden')) return; // don't touch focus-hidden nodes
         var nodeDepth = n.data('depth') || 0;
         if (depthFilterEnabled && nodeDepth > currentMaxDepth) {
           n.addClass('depth-hidden');
@@ -619,9 +905,8 @@ export function generateHtml(graphData, options = {}) {
           n.removeClass('depth-hidden');
         }
       });
-
-      // Hide edges whose source or target is hidden.
       cy.edges().forEach(function (e) {
+        if (e.hasClass('focus-hidden')) return;
         var src = cy.getElementById(e.data('source'));
         var tgt = cy.getElementById(e.data('target'));
         if (src.hasClass('depth-hidden') || tgt.hasClass('depth-hidden')) {
@@ -630,122 +915,120 @@ export function generateHtml(graphData, options = {}) {
           e.removeClass('depth-hidden');
         }
       });
-
-      // Hide empty group nodes.
-      if (clusterEnabled) {
-        cy.nodes('[?isGroup]').forEach(function (g) {
-          var visibleChildren = g.children().filter(function (c) {
-            return !c.hasClass('depth-hidden');
-          });
-          if (visibleChildren.length === 0) {
-            g.addClass('depth-hidden');
-          } else {
-            g.removeClass('depth-hidden');
-          }
-        });
-      }
     });
     updateStats();
   }
 
-  // ── Sidebar detail view ────────────────────────────────────
+  // ── Sidebar: node detail ───────────────────────────────────
   var placeholder = document.getElementById('detail-placeholder');
   var detailContent = document.getElementById('detail-content');
 
-  cy.on('tap', 'node[!isGroup]', function (evt) {
-    var d = evt.target.data();
+  function showNodeDetail(d) {
     placeholder.style.display = 'none';
     detailContent.style.display = '';
 
     var badgeClass = 'badge-' + d.nodeType;
-    var html = '';
-    html += '<h2>' + esc(d.label) + '</h2>';
-    html += '<div class="class-name">' + esc(d.className || '') + ' <span class="badge ' + badgeClass + '">' + d.nodeType + '</span></div>';
-    html += '<div class="file-path">' + esc(shortenPath(d.filePath)) + '</div>';
-
+    var h = '';
+    h += '<h2>' + esc(d.label) + '</h2>';
+    h += '<div class="class-name">' + esc(d.className || '') + ' <span class="badge ' + badgeClass + '">' + d.nodeType + '</span></div>';
+    h += '<div class="file-path">' + esc(shortenPath(d.filePath)) + '</div>';
     if (d.directoryGroup) {
-      html += '<div class="file-path" style="margin-top:2px;color:#64748b">📁 ' + esc(d.directoryGroup) + '</div>';
+      h += '<div class="file-path" style="margin-top:2px;color:#64748b">' + esc(d.directoryGroup) + '</div>';
     }
 
-    // Properties
-    html += '<div style="margin-top:16px"><div class="section-title">Properties</div>';
+    h += '<div style="margin-top:16px"><div class="section-title">Properties</div>';
     if (d.properties && d.properties.length) {
-      html += '<ul class="prop-list">';
+      h += '<ul class="prop-list">';
       for (var i = 0; i < d.properties.length; i++) {
-        var p = d.properties[i];
-        html += '<li>' + esc(p.name) + ' <span class="prop-type">' + esc(p.type || 'any') + '</span></li>';
+        h += '<li>' + esc(d.properties[i].name) + ' <span class="prop-type">' + esc(d.properties[i].type || 'any') + '</span></li>';
       }
-      html += '</ul>';
-    } else {
-      html += '<div class="empty-msg">None</div>';
-    }
-    html += '</div>';
+      h += '</ul>';
+    } else { h += '<div class="empty-msg">None</div>'; }
+    h += '</div>';
 
-    // Internal state
-    html += '<div style="margin-top:12px"><div class="section-title">Internal State</div>';
+    h += '<div style="margin-top:12px"><div class="section-title">Internal State</div>';
     if (d.internalState && d.internalState.length) {
-      html += '<ul class="prop-list">';
+      h += '<ul class="prop-list">';
       for (var j = 0; j < d.internalState.length; j++) {
-        var s = d.internalState[j];
-        html += '<li>' + esc(s.name) + ' <span class="prop-type">' + esc(s.type || 'any') + '</span></li>';
+        h += '<li>' + esc(d.internalState[j].name) + ' <span class="prop-type">' + esc(d.internalState[j].type || 'any') + '</span></li>';
       }
-      html += '</ul>';
-    } else {
-      html += '<div class="empty-msg">None</div>';
-    }
-    html += '</div>';
+      h += '</ul>';
+    } else { h += '<div class="empty-msg">None</div>'; }
+    h += '</div>';
 
-    // Events dispatched
-    html += '<div style="margin-top:12px"><div class="section-title">Events Dispatched</div>';
+    h += '<div style="margin-top:12px"><div class="section-title">Events Dispatched</div>';
     if (d.eventsDispatched && d.eventsDispatched.length) {
-      html += '<div style="display:flex;flex-wrap:wrap;gap:4px">';
+      h += '<div style="display:flex;flex-wrap:wrap;gap:4px">';
       for (var k = 0; k < d.eventsDispatched.length; k++) {
-        html += '<span class="event-tag">' + esc(d.eventsDispatched[k]) + '</span>';
+        h += '<span class="event-tag">' + esc(d.eventsDispatched[k]) + '</span>';
       }
-      html += '</div>';
-    } else {
-      html += '<div class="empty-msg">None</div>';
-    }
-    html += '</div>';
+      h += '</div>';
+    } else { h += '<div class="empty-msg">None</div>'; }
+    h += '</div>';
 
-    // Connections
     var incoming = cy.edges('[target="' + d.id + '"]');
     var outgoing = cy.edges('[source="' + d.id + '"]');
 
     if (outgoing.length) {
-      html += '<div style="margin-top:12px"><div class="section-title">Renders (' + outgoing.length + ')</div>';
-      html += '<ul class="prop-list">';
+      h += '<div style="margin-top:12px"><div class="section-title">Renders (' + outgoing.length + ')</div>';
+      h += '<ul class="prop-list">';
       outgoing.forEach(function (e) {
         var ed = e.data();
-        html += '<li>' + esc(ed.target);
-        if (ed.propBindings && ed.propBindings.length) {
-          html += ' <span class="prop-type">' + esc(ed.propBindings.join(', ')) + '</span>';
-        }
-        html += '</li>';
+        h += '<li>' + esc(ed.target);
+        if (ed.propBindings && ed.propBindings.length) h += ' <span class="prop-type">' + esc(ed.propBindings.join(', ')) + '</span>';
+        h += '</li>';
       });
-      html += '</ul></div>';
+      h += '</ul></div>';
     }
 
     if (incoming.length) {
-      html += '<div style="margin-top:12px"><div class="section-title">Rendered by (' + incoming.length + ')</div>';
-      html += '<ul class="prop-list">';
-      incoming.forEach(function (e) {
-        html += '<li>' + esc(e.data().source) + '</li>';
+      h += '<div style="margin-top:12px"><div class="section-title">Rendered by (' + incoming.length + ')</div>';
+      h += '<ul class="prop-list">';
+      incoming.forEach(function (e) { h += '<li>' + esc(e.data().source) + '</li>'; });
+      h += '</ul></div>';
+    }
+
+    detailContent.innerHTML = h;
+  }
+
+  function showGroupDetail(d) {
+    placeholder.style.display = 'none';
+    detailContent.style.display = '';
+
+    var colors = groupColorMap[d.id] || {};
+    var h = '';
+    h += '<h2 style="color:' + (colors.text || '#e2e8f0') + '">' + esc(d.rawLabel || d.label) + '</h2>';
+    h += '<div class="class-name">' + d.childCount + ' components</div>';
+    h += '<div class="empty-msg" style="margin-top:4px">Double-click to ' + (d.collapsed ? 'expand' : 'collapse') + '</div>';
+
+    h += '<div style="margin-top:16px"><div class="section-title">Components</div>';
+    h += '<ul class="group-tag-list">';
+    if (d.childTags) {
+      for (var i = 0; i < d.childTags.length; i++) {
+        h += '<li data-tag="' + esc(d.childTags[i]) + '">' + esc(d.childTags[i]) + '</li>';
+      }
+    }
+    h += '</ul></div>';
+
+    detailContent.innerHTML = h;
+
+    // Allow clicking a tag in the group list to focus on it.
+    detailContent.querySelectorAll('.group-tag-list li').forEach(function (li) {
+      li.addEventListener('click', function () {
+        var tag = this.getAttribute('data-tag');
+        // If group is collapsed, expand it first.
+        var groupId = d.id;
+        if (d.collapsed) {
+          expandGroup(groupId);
+          reLayout(false);
+        }
+        // Then focus on the component.
+        setTimeout(function () { enterFocus(tag); }, 100);
       });
-      html += '</ul></div>';
-    }
+    });
+  }
 
-    detailContent.innerHTML = html;
-  });
-
-  cy.on('tap', function (evt) {
-    if (evt.target === cy) {
-      placeholder.style.display = '';
-      detailContent.style.display = 'none';
-    }
-  });
-
-  // ── Search / filter ────────────────────────────────────────
+  // ── Search ─────────────────────────────────────────────────
   var searchInput = document.getElementById('search');
 
   searchInput.addEventListener('input', function () {
@@ -756,34 +1039,29 @@ export function generateHtml(graphData, options = {}) {
     }
     cy.batch(function () {
       cy.elements().addClass('dimmed').removeClass('highlighted');
-      var matches = cy.nodes('[!isGroup]').filter(function (n) {
+      var matches = cy.nodes().filter(function (n) {
+        if (!n.visible()) return false;
         var d = n.data();
-        return d.label.toLowerCase().includes(q) ||
-               (d.className && d.className.toLowerCase().includes(q)) ||
-               (d.directoryGroup && d.directoryGroup.toLowerCase().includes(q));
+        var label = (d.label || '').toLowerCase();
+        var cls = (d.className || '').toLowerCase();
+        var dir = (d.directoryGroup || d.rawLabel || '').toLowerCase();
+        return label.includes(q) || cls.includes(q) || dir.includes(q);
       });
       matches.removeClass('dimmed').addClass('highlighted');
-      // Also highlight connected edges and neighbors
       matches.connectedEdges().removeClass('dimmed');
       matches.neighborhood().nodes().removeClass('dimmed');
-      // If clustered, highlight parent groups of matches.
       if (clusterEnabled) {
         matches.forEach(function (n) {
-          var parent = n.parent();
-          if (parent.length) parent.removeClass('dimmed');
+          var p = n.parent();
+          if (p.length) p.removeClass('dimmed');
         });
       }
     });
   });
 
   // ── Toolbar buttons ────────────────────────────────────────
-  document.getElementById('btn-fit').addEventListener('click', function () {
-    cy.fit(undefined, 40);
-  });
-
-  document.getElementById('btn-reset').addEventListener('click', function () {
-    reLayout(true);
-  });
+  document.getElementById('btn-fit').addEventListener('click', function () { cy.fit(undefined, 40); });
+  document.getElementById('btn-reset').addEventListener('click', function () { reLayout(true); });
 
   document.getElementById('btn-png').addEventListener('click', function () {
     var png = cy.png({ scale: 2, bg: '#0f1117', full: true });
@@ -798,7 +1076,7 @@ export function generateHtml(graphData, options = {}) {
   document.getElementById('btn-toggle').addEventListener('click', function () {
     sidebar.classList.toggle('hidden');
     statsEl.classList.toggle('shifted');
-    this.textContent = sidebar.classList.contains('hidden') ? '▶' : '◀';
+    this.textContent = sidebar.classList.contains('hidden') ? '\\u25B6' : '\\u25C0';
     setTimeout(function () { cy.resize(); }, 250);
   });
 })();
@@ -811,7 +1089,7 @@ function esc(str) {
 
 function shortenPath(filePath) {
   if (!filePath) return '';
-  var parts = filePath.replace(/\\\\/g, '/').split('/');
+  var parts = filePath.replace(/\\\\\\\\/g, '/').split('/');
   return parts.length > 3 ? '…/' + parts.slice(-3).join('/') : filePath;
 }
 </script>
