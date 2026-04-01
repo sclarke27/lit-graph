@@ -14,7 +14,7 @@ export async function analyzeWithLlm(graphData, archSignals, options) {
   const {
     ollamaUrl = 'http://10.0.0.15:11434',
     model = 'qwen3:32b',
-    timeout = 300000,
+    timeout = 600000,
     cacheDir = '.lit-graph-cache',
     rootDir = '.',
   } = options;

@@ -76,7 +76,7 @@ export async function orchestrate(options) {
     const llmGrouping = await analyzeWithLlm(graphData, archSignals, {
       ollamaUrl,
       model,
-      timeout: 300000,
+      timeout: 600000,
       cacheDir: resolvedCacheDir,
       rootDir: directory,
     });
