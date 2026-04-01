@@ -132,8 +132,7 @@ INSTRUCTIONS:
 - Root shell/app components can go in an "App Shell" group
 - Prefer fewer, larger groups over many tiny ones (aim for 3-8 groups)
 
-/no_think
-Respond with ONLY valid JSON, no markdown fences, no explanation, no thinking:
+Respond with ONLY valid JSON, no markdown fences, no explanation:
 {"groups":[{"name":"string","description":"one line description","components":["tag-name"]}]}`;
 }
 
@@ -154,15 +153,18 @@ async function callOllama(ollamaUrl, model, prompt, timeout, isRetry = false) {
   const timer = setTimeout(() => controller.abort(), timeout);
 
   try {
-    const res = await fetch(`${ollamaUrl}/api/generate`, {
+    const res = await fetch(`${ollamaUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model,
-        prompt,
+        messages: [
+          { role: 'user', content: prompt },
+        ],
         stream: false,
         format: 'json',
         keep_alive: '10m',
+        think: false,
         options: {
           temperature: 0.3,
           num_predict: 4096,
@@ -177,7 +179,7 @@ async function callOllama(ollamaUrl, model, prompt, timeout, isRetry = false) {
     }
 
     const data = await res.json();
-    const responseText = data.response || '';
+    const responseText = (data.message && data.message.content) || data.response || '';
 
     // Parse JSON from the response.
     const grouping = parseJsonResponse(responseText);
