@@ -67,8 +67,12 @@ function buildPrompt(graphData, archSignals, rootDir) {
     return `  - <${n.tagName}> (${parts.join(', ')})`;
   });
 
-  // Relationships.
+  // Relationships. For large graphs, skip binding details to keep prompt manageable.
+  const isLargeGraph = graphData.edges.length > 80;
   const edgeLines = graphData.edges.map((e) => {
+    if (isLargeGraph) {
+      return `  - <${e.source}> renders <${e.target}>`;
+    }
     const bindings = [];
     if (e.propBindings.length) bindings.push(`props: ${e.propBindings.join(', ')}`);
     if (e.eventBindings.length) bindings.push(`events: ${e.eventBindings.join(', ')}`);
@@ -157,9 +161,11 @@ async function callOllama(ollamaUrl, model, prompt, timeout, isRetry = false) {
         prompt,
         stream: false,
         format: 'json',
+        keep_alive: '10m',
         options: {
           temperature: 0.3,
           num_predict: 4096,
+          num_ctx: 32768,
         },
       }),
       signal: controller.signal,
