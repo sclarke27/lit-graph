@@ -112,7 +112,8 @@ function buildPrompt(graphData, archSignals, rootDir) {
     }
   }
 
-  return `You are analyzing a Lit web component project to understand its architecture.
+  return `/nothink
+You are analyzing a Lit web component project to understand its architecture.
 Given the component graph and architectural signals below, group the components into logical application sections.
 
 COMPONENTS (${graphData.nodes.length} total):
