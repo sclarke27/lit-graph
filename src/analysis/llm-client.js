@@ -132,7 +132,8 @@ INSTRUCTIONS:
 - Root shell/app components can go in an "App Shell" group
 - Prefer fewer, larger groups over many tiny ones (aim for 3-8 groups)
 
-Respond with ONLY valid JSON, no markdown fences, no explanation:
+/no_think
+Respond with ONLY valid JSON, no markdown fences, no explanation, no thinking:
 {"groups":[{"name":"string","description":"one line description","components":["tag-name"]}]}`;
 }
 
