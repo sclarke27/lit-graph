@@ -109,6 +109,35 @@ export function buildGraph(components, rootDir) {
     if (d > maxDepth) maxDepth = d;
   }
 
+  // ── Component groups: cluster by root subtree ───────────────
+  // BFS from each root to assign every component to a root's subtree.
+  // Components reachable from multiple roots go to "shared".
+  /** @type {Map<string, string>} */
+  const componentGroupMap = new Map();
+
+  for (const root of roots) {
+    const bfsQueue = [root];
+    const visited = new Set();
+    while (bfsQueue.length > 0) {
+      const tag = bfsQueue.shift();
+      if (visited.has(tag)) continue;
+      visited.add(tag);
+
+      if (componentGroupMap.has(tag) && componentGroupMap.get(tag) !== root) {
+        // Reachable from multiple roots — mark as shared.
+        componentGroupMap.set(tag, '__shared__');
+      } else if (!componentGroupMap.has(tag)) {
+        componentGroupMap.set(tag, root);
+      }
+
+      const kids = childrenOf.get(tag) || [];
+      for (const kid of kids) bfsQueue.push(kid);
+    }
+  }
+
+  // Build group labels: root tag name, or "shared" for multi-root components.
+  const componentGroups = new Set();
+
   // Compute directory groups from file paths.
   const directoryGroups = new Set();
 
@@ -124,7 +153,7 @@ export function buildGraph(components, rootDir) {
       else if (isParent && isChild) nodeType = 'container';
       else nodeType = 'leaf';
 
-      // Directory group: the folder path relative to the scan root.
+      // Directory group.
       let dirGroup = '';
       if (rootDir) {
         const relPath = relative(rootDir, comp.filePath).split(sep).join('/');
@@ -132,6 +161,11 @@ export function buildGraph(components, rootDir) {
         dirGroup = relDir === '.' ? '(root)' : relDir;
       }
       directoryGroups.add(dirGroup);
+
+      // Component group (by root subtree).
+      const rawGroup = componentGroupMap.get(comp.tagName) || '';
+      const compGroup = rawGroup === '__shared__' ? 'shared' : rawGroup;
+      componentGroups.add(compGroup);
 
       return {
         id: comp.tagName,
@@ -143,6 +177,7 @@ export function buildGraph(components, rootDir) {
         eventsDispatched: comp.eventsDispatched,
         nodeType,
         directoryGroup: dirGroup,
+        componentGroup: compGroup,
         depth: depthMap.get(comp.tagName) ?? 0,
       };
     });
@@ -152,6 +187,7 @@ export function buildGraph(components, rootDir) {
     edges,
     maxDepth,
     directoryGroups: [...directoryGroups].sort(),
+    componentGroups: [...componentGroups].sort(),
   };
 }
 

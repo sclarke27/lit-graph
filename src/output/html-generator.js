@@ -9,19 +9,19 @@
 export function generateHtml(graphData, options = {}) {
   const title = options.title || 'Lit Component Graph';
 
-  const dirGroups = graphData.directoryGroups || [];
+  // Use component groups (by root subtree) for clustering.
+  const compGroups = graphData.componentGroups || [];
 
-  // Pre-compute group metadata: child count, child tags list.
   const groupMeta = {};
-  for (const g of dirGroups) {
-    const children = graphData.nodes.filter((n) => n.directoryGroup === g);
+  for (const g of compGroups) {
+    const children = graphData.nodes.filter((n) => n.componentGroup === g);
     groupMeta[g] = {
       count: children.length,
       tags: children.map((c) => c.tagName),
     };
   }
 
-  const cyGroupNodes = dirGroups.map((g) => ({
+  const cyGroupNodes = compGroups.map((g) => ({
     data: {
       id: 'group:' + g,
       label: g + ' (' + groupMeta[g].count + ')',
@@ -46,6 +46,7 @@ export function generateHtml(graphData, options = {}) {
       stateCount: n.internalState.length,
       eventCount: n.eventsDispatched.length,
       directoryGroup: n.directoryGroup || '',
+      componentGroup: n.componentGroup || '',
       depth: n.depth ?? 0,
     },
   }));
@@ -318,7 +319,7 @@ export function generateHtml(graphData, options = {}) {
   <input type="text" id="search" placeholder="Search components…" autocomplete="off" />
   <div class="toolbar-sep"></div>
   <button id="btn-cluster" title="Group components by directory (double-click group to expand)">Clusters</button>
-  <button id="btn-focus" title="Focus on selected component's neighborhood" disabled>Focus</button>
+  <button id="btn-focus" title="Focus on selected component (or double-click any component)">Focus</button>
   <button id="btn-depth" title="Toggle depth filtering">Depth</button>
   <div class="depth-control" id="depth-wrap" style="display:none">
     <input type="range" id="depth-slider" min="0" max="${maxDepth}" value="${maxDepth}" />
@@ -654,8 +655,8 @@ export function generateHtml(graphData, options = {}) {
       var srcNode = allElements.find(function (n) { return n.data.id === el.data.source; });
       var tgtNode = allElements.find(function (n) { return n.data.id === el.data.target; });
       if (!srcNode || !tgtNode) return;
-      var srcGroup = 'group:' + (srcNode.data.directoryGroup || '');
-      var tgtGroup = 'group:' + (tgtNode.data.directoryGroup || '');
+      var srcGroup = 'group:' + (srcNode.data.componentGroup || '');
+      var tgtGroup = 'group:' + (tgtNode.data.componentGroup || '');
       if (srcGroup === tgtGroup) return; // same group, skip
       // Don't add if either group is expanded.
       if (expandedGroups[srcGroup] || expandedGroups[tgtGroup]) return;
@@ -703,7 +704,7 @@ export function generateHtml(graphData, options = {}) {
     // Show child component nodes and parent them to this group.
     var rawLabel = groupNode.data('rawLabel');
     cy.nodes('[!isGroup]').forEach(function (n) {
-      if (n.data('directoryGroup') === rawLabel) {
+      if (n.data('componentGroup') === rawLabel) {
         n.removeClass('focus-hidden');
         n.move({ parent: groupId });
       }
@@ -731,7 +732,7 @@ export function generateHtml(graphData, options = {}) {
     var rawLabel = groupNode.data('rawLabel');
     // Hide child component nodes.
     cy.nodes('[!isGroup]').forEach(function (n) {
-      if (n.data('directoryGroup') === rawLabel) {
+      if (n.data('componentGroup') === rawLabel) {
         n.addClass('focus-hidden');
         n.move({ parent: null });
       }
@@ -767,11 +768,17 @@ export function generateHtml(graphData, options = {}) {
     exitFocus();
   });
 
-  // Also allow Escape to exit focus.
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && focusTarget) {
       exitFocus();
     }
+  });
+
+  // Double-click a component node to focus on it directly.
+  cy.on('dbltap', 'node[!isGroup]', function (evt) {
+    selectedNode = evt.target.id();
+    enterFocus(selectedNode);
+    showNodeDetail(evt.target.data());
   });
 
   function enterFocus(nodeId) {
@@ -822,7 +829,7 @@ export function generateHtml(graphData, options = {}) {
       if (clusterEnabled) {
         // Hide nodes that belong to collapsed groups.
         cy.nodes('[!isGroup]').forEach(function (n) {
-          var gId = 'group:' + n.data('directoryGroup');
+          var gId = 'group:' + n.data('componentGroup');
           if (!expandedGroups[gId]) {
             n.addClass('focus-hidden');
           }
@@ -848,24 +855,18 @@ export function generateHtml(graphData, options = {}) {
   // ── Track selection for Focus button ───────────────────────
   cy.on('tap', 'node[!isGroup]', function (evt) {
     selectedNode = evt.target.id();
-    btnFocus.disabled = false;
     showNodeDetail(evt.target.data());
   });
 
   // Click on group node shows group info in sidebar.
   cy.on('tap', 'node[?isGroup]', function (evt) {
-    var d = evt.target.data();
     selectedNode = null;
-    btnFocus.disabled = true;
-    showGroupDetail(d);
+    showGroupDetail(evt.target.data());
   });
 
   cy.on('tap', function (evt) {
     if (evt.target === cy) {
       selectedNode = null;
-      btnFocus.disabled = !!focusTarget; // keep enabled if in focus mode for exit
-      if (focusTarget) btnFocus.disabled = false;
-      else btnFocus.disabled = true;
       placeholder.style.display = '';
       detailContent.style.display = 'none';
     }
@@ -1044,7 +1045,7 @@ export function generateHtml(graphData, options = {}) {
         var d = n.data();
         var label = (d.label || '').toLowerCase();
         var cls = (d.className || '').toLowerCase();
-        var dir = (d.directoryGroup || d.rawLabel || '').toLowerCase();
+        var dir = (d.componentGroup || d.directoryGroup || d.rawLabel || '').toLowerCase();
         return label.includes(q) || cls.includes(q) || dir.includes(q);
       });
       matches.removeClass('dimmed').addClass('highlighted');
