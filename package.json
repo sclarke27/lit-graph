@@ -1,0 +1,27 @@
+{
+  "name": "lit-graph",
+  "version": "0.1.0",
+  "description": "Generate interactive component graphs from Lit web component projects",
+  "type": "module",
+  "bin": {
+    "lit-graph": "./bin/lit-graph.js"
+  },
+  "main": "./src/index.js",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": ["lit", "web-components", "visualization", "graph", "architecture"],
+  "license": "MIT",
+  "dependencies": {
+    "@babel/parser": "^7.24.0",
+    "@babel/traverse": "^7.24.0",
+    "@babel/types": "^7.24.0",
+    "commander": "^12.0.0",
+    "fast-glob": "^3.3.0",
+    "htmlparser2": "^9.1.0"
+  },
+  "devDependencies": {
+    "vitest": "^2.0.0"
+  }
+}
