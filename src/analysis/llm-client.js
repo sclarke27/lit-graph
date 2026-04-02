@@ -17,6 +17,8 @@ function httpPost(url, body, timeout) {
     const parsed = new URL(url);
     const reqFn = parsed.protocol === 'https:' ? httpsRequest : httpRequest;
 
+    console.log(`    POST ${url} (${Buffer.byteLength(body)} bytes, timeout: ${timeout / 1000}s)`);
+
     const req = reqFn(
       {
         hostname: parsed.hostname,
@@ -30,10 +32,15 @@ function httpPost(url, body, timeout) {
         timeout,
       },
       (res) => {
+        console.log(`    Response status: ${res.statusCode}`);
         const chunks = [];
-        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('data', (chunk) => {
+          chunks.push(chunk);
+          if (chunks.length === 1) console.log('    Receiving data…');
+        });
         res.on('end', () => {
           const responseBody = Buffer.concat(chunks).toString();
+          console.log(`    Response complete (${responseBody.length} bytes)`);
           if (res.statusCode >= 400) {
             reject(new Error(`Ollama returned ${res.statusCode}: ${responseBody}`));
           } else {
@@ -43,14 +50,19 @@ function httpPost(url, body, timeout) {
       },
     );
 
-    req.on('error', (err) => reject(err));
+    req.on('error', (err) => {
+      console.log(`    Request error: ${err.message}`);
+      reject(err);
+    });
     req.on('timeout', () => {
+      console.log('    Request timed out');
       req.destroy();
       reject(new Error('TIMEOUT'));
     });
 
     req.write(body);
     req.end();
+    console.log('    Request sent, waiting for response…');
   });
 }
 
