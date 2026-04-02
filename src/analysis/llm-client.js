@@ -94,6 +94,8 @@ export async function analyzeWithLlm(graphData, archSignals, options) {
 
   // Build the prompt.
   const prompt = buildPrompt(graphData, archSignals, rootDir);
+  const approxTokens = Math.ceil(prompt.length / 4);
+  console.log(`    Prompt: ${prompt.length} chars (~${approxTokens} tokens)`);
 
   // Call Ollama.
   let result = await callOllama(ollamaUrl, model, prompt, timeout);
@@ -228,7 +230,7 @@ async function callOllama(ollamaUrl, model, prompt, timeout, isRetry = false) {
       options: {
         temperature: 0.3,
         num_predict: 4096,
-        num_ctx: 32768,
+        num_ctx: 8192,
       },
     });
 
