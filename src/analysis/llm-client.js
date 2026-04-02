@@ -93,12 +93,19 @@ export async function analyzeWithLlm(graphData, archSignals, options) {
   }
 
   // Build the prompt.
+  const isLarge = graphData.nodes.length > 50;
   const prompt = buildPrompt(graphData, archSignals, rootDir);
   const approxTokens = Math.ceil(prompt.length / 4);
   console.log(`    Prompt: ${prompt.length} chars (~${approxTokens} tokens)`);
 
   // Call Ollama.
   let result = await callOllama(ollamaUrl, model, prompt, timeout);
+
+  // For large projects, the LLM returns directory→group mappings.
+  // Convert to standard grouping format by expanding directories to tags.
+  if (isLarge && result.directories) {
+    result = expandDirectoryMapping(result, graphData.nodes, rootDir);
+  }
 
   // Validate and fix the response.
   const allTags = new Set(graphData.nodes.map((n) => n.tagName));
@@ -127,7 +134,7 @@ function buildPrompt(graphData, archSignals, rootDir) {
   const nodeCount = graphData.nodes.length;
   const isLarge = nodeCount > 50;
 
-  // Group components by directory — this is the primary input for the LLM.
+  // Group components by directory.
   const byDir = {};
   for (const n of graphData.nodes) {
     const rel = relative(rootDir, n.filePath).replace(/\\/g, '/');
@@ -135,33 +142,42 @@ function buildPrompt(graphData, archSignals, rootDir) {
     if (!byDir[dir]) byDir[dir] = [];
     byDir[dir].push(n.tagName);
   }
+
+  if (isLarge) {
+    // Two-step approach for large projects:
+    // Step 1: Send only directory names + counts to LLM for naming.
+    // Step 2: Map components to groups locally using the directory mapping.
+    // This keeps the prompt tiny regardless of project size.
+    const dirSummary = Object.entries(byDir)
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([dir, tags]) => `  ${dir}/ (${tags.length} components)`);
+
+    return `/nothink
+This Lit web component project has ${nodeCount} components across these directories:
+
+${dirSummary.join('\n')}
+
+Assign each directory to a logical group. Directories with related purposes should share a group.
+
+Respond with ONLY valid JSON mapping each directory to a group name and description:
+{"directories":{"dir/path":{"group":"Group Name","description":"one line"}}}`;
+  }
+
+  // Small projects: list everything.
   const dirLines = Object.entries(byDir)
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([dir, tags]) => `  ${dir}/: ${tags.join(', ')}`);
 
-  // For small projects, also include the relationship tree.
   let relationSection = '';
-  if (!isLarge) {
-    const adj = {};
-    for (const e of graphData.edges) {
-      if (!adj[e.source]) adj[e.source] = [];
-      adj[e.source].push(e.target);
-    }
-    const adjLines = Object.entries(adj)
-      .map(([parent, children]) => `  ${parent} -> ${children.join(', ')}`);
-    if (adjLines.length) {
-      relationSection = `\nCOMPONENT TREE:\n${adjLines.join('\n')}\n`;
-    }
+  const adj = {};
+  for (const e of graphData.edges) {
+    if (!adj[e.source]) adj[e.source] = [];
+    adj[e.source].push(e.target);
   }
-
-  // Architectural signals — one line each.
-  const signalLines = [];
-
-  if (archSignals.sharedComponents.length) {
-    signalLines.push(`Shared (3+ parents): ${archSignals.sharedComponents.map((s) => s.tagName).join(', ')}`);
-  }
-  if (archSignals.routes.length) {
-    signalLines.push(`Route hosts: ${archSignals.routes.map((r) => r.hostTag).join(', ')}`);
+  const adjLines = Object.entries(adj)
+    .map(([parent, children]) => `  ${parent} -> ${children.join(', ')}`);
+  if (adjLines.length) {
+    relationSection = `\nCOMPONENT TREE:\n${adjLines.join('\n')}\n`;
   }
 
   return `/nothink
@@ -170,12 +186,10 @@ Group these ${nodeCount} Lit web components into logical application sections.
 COMPONENTS BY DIRECTORY:
 ${dirLines.join('\n')}
 ${relationSection}
-${signalLines.length ? 'SIGNALS:\n' + signalLines.join('\n') + '\n' : ''}
 RULES:
 - Every component tag must appear in exactly one group
 - Use descriptive group names (e.g. "Authentication", "Dashboard", "Shared UI Kit")
 - Aim for 4-10 groups
-- Components in the same directory likely belong together
 
 Respond with ONLY valid JSON:
 {"groups":[{"name":"string","description":"string","components":["tag-name"]}]}`;
@@ -259,6 +273,7 @@ function parseJsonResponse(text) {
   try {
     const parsed = JSON.parse(text);
     if (parsed.groups && Array.isArray(parsed.groups)) return parsed;
+    if (parsed.directories && typeof parsed.directories === 'object') return parsed;
   } catch { /* fall through */ }
 
   // Try extracting JSON from markdown fences or surrounding text.
@@ -267,10 +282,45 @@ function parseJsonResponse(text) {
     try {
       const parsed = JSON.parse(jsonMatch[0]);
       if (parsed.groups && Array.isArray(parsed.groups)) return parsed;
+      if (parsed.directories && typeof parsed.directories === 'object') return parsed;
     } catch { /* fall through */ }
   }
 
   return null;
+}
+
+/**
+ * Convert a directory→group mapping from the LLM into the standard
+ * LlmGrouping format by expanding each directory to its component tags.
+ *
+ * @param {{ directories: Object<string, { group: string, description: string }> }} dirMapping
+ * @param {import('../graph/graph-builder.js').GraphNode[]} nodes
+ * @param {string} rootDir
+ * @returns {LlmGrouping}
+ */
+function expandDirectoryMapping(dirMapping, nodes, rootDir) {
+  // Build directory → tags lookup.
+  const byDir = {};
+  for (const n of nodes) {
+    const rel = relative(rootDir, n.filePath).replace(/\\/g, '/');
+    const dir = rel.includes('/') ? rel.substring(0, rel.lastIndexOf('/')) : '(root)';
+    if (!byDir[dir]) byDir[dir] = [];
+    byDir[dir].push(n.tagName);
+  }
+
+  // Build groups from the LLM's directory assignments.
+  const groupMap = {};
+  for (const [dir, info] of Object.entries(dirMapping.directories)) {
+    const groupName = (info && info.group) || dir;
+    const description = (info && info.description) || '';
+    if (!groupMap[groupName]) {
+      groupMap[groupName] = { name: groupName, description, components: [] };
+    }
+    const tags = byDir[dir] || [];
+    groupMap[groupName].components.push(...tags);
+  }
+
+  return { groups: Object.values(groupMap) };
 }
 
 // ── Response validation ───────────────────────────────────────────
