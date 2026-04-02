@@ -1,5 +1,58 @@
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { relative } from 'node:path';
 import { computeCacheKey, readCache, writeCache } from './cache.js';
+
+/**
+ * Simple HTTP POST using Node built-in modules.
+ * Avoids Node fetch quirks that can cause hangs with Ollama.
+ *
+ * @param {string} url
+ * @param {string} body - JSON string.
+ * @param {number} timeout - Milliseconds.
+ * @returns {Promise<string>} Response body.
+ */
+function httpPost(url, body, timeout) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const reqFn = parsed.protocol === 'https:' ? httpsRequest : httpRequest;
+
+    const req = reqFn(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+        timeout,
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => {
+          const responseBody = Buffer.concat(chunks).toString();
+          if (res.statusCode >= 400) {
+            reject(new Error(`Ollama returned ${res.statusCode}: ${responseBody}`));
+          } else {
+            resolve(responseBody);
+          }
+        });
+      },
+    );
+
+    req.on('error', (err) => reject(err));
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('TIMEOUT'));
+    });
+
+    req.write(body);
+    req.end();
+  });
+}
 
 /**
  * Analyze a component graph using an Ollama LLM to produce meaningful
@@ -150,40 +203,29 @@ Respond with ONLY valid JSON, no markdown fences, no explanation:
  * @returns {Promise<LlmGrouping>}
  */
 async function callOllama(ollamaUrl, model, prompt, timeout, isRetry = false) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-
   try {
-    const res = await fetch(`${ollamaUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'user', content: prompt },
-        ],
-        stream: false,
-        format: 'json',
-        keep_alive: '10m',
-        think: false,
-        options: {
-          temperature: 0.3,
-          num_predict: 4096,
-          num_ctx: 32768,
-        },
-      }),
-      signal: controller.signal,
+    const payload = JSON.stringify({
+      model,
+      messages: [
+        { role: 'user', content: prompt },
+      ],
+      stream: false,
+      format: 'json',
+      keep_alive: '10m',
+      think: false,
+      options: {
+        temperature: 0.3,
+        num_predict: 4096,
+        num_ctx: 32768,
+      },
     });
 
-    if (!res.ok) {
-      throw new Error(`Ollama returned ${res.status}: ${await res.text()}`);
-    }
-
-    const data = await res.json();
-    const responseText = (data.message && data.message.content) || data.response || '';
+    const responseText = await httpPost(`${ollamaUrl}/api/chat`, payload, timeout);
+    const data = JSON.parse(responseText);
+    const content = (data.message && data.message.content) || data.response || '';
 
     // Parse JSON from the response.
-    const grouping = parseJsonResponse(responseText);
+    const grouping = parseJsonResponse(content);
     if (grouping) return grouping;
 
     // If parsing failed, retry once with a stricter prompt.
@@ -196,17 +238,15 @@ async function callOllama(ollamaUrl, model, prompt, timeout, isRetry = false) {
 
     throw new Error('LLM did not return valid JSON after retry');
   } catch (err) {
-    if (err.name === 'AbortError') {
+    const errMsg = err.message || '';
+    if (errMsg.includes('TIMEOUT')) {
       throw new Error(`LLM request timed out after ${timeout / 1000}s`);
     }
-    const errMsg = err.message || '';
-    const causeCode = err.cause && err.cause.code;
     if (
-      causeCode === 'ECONNREFUSED' ||
-      causeCode === 'ECONNRESET' ||
-      causeCode === 'ETIMEDOUT' ||
-      errMsg.includes('fetch failed') ||
-      errMsg.includes('ECONNREFUSED')
+      errMsg.includes('ECONNREFUSED') ||
+      errMsg.includes('ECONNRESET') ||
+      errMsg.includes('ETIMEDOUT') ||
+      errMsg.includes('connect')
     ) {
       throw new Error(
         `Could not connect to Ollama at ${ollamaUrl}. Is the server running?\n` +
@@ -214,8 +254,6 @@ async function callOllama(ollamaUrl, model, prompt, timeout, isRetry = false) {
       );
     }
     throw err;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
