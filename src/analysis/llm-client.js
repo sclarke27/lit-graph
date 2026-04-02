@@ -1,11 +1,10 @@
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { relative } from 'node:path';
+import { dirname, relative } from 'node:path';
 import { computeCacheKey, readCache, writeCache } from './cache.js';
 
 /**
  * Simple HTTP POST using Node built-in modules.
- * Avoids Node fetch quirks that can cause hangs with Ollama.
  *
  * @param {string} url
  * @param {string} body - JSON string.
@@ -16,8 +15,6 @@ function httpPost(url, body, timeout) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const reqFn = parsed.protocol === 'https:' ? httpsRequest : httpRequest;
-
-    console.log(`    POST ${url} (${Buffer.byteLength(body)} bytes, timeout: ${timeout / 1000}s)`);
 
     const req = reqFn(
       {
@@ -32,15 +29,10 @@ function httpPost(url, body, timeout) {
         timeout,
       },
       (res) => {
-        console.log(`    Response status: ${res.statusCode}`);
         const chunks = [];
-        res.on('data', (chunk) => {
-          chunks.push(chunk);
-          if (chunks.length === 1) console.log('    Receiving data…');
-        });
+        res.on('data', (chunk) => chunks.push(chunk));
         res.on('end', () => {
           const responseBody = Buffer.concat(chunks).toString();
-          console.log(`    Response complete (${responseBody.length} bytes)`);
           if (res.statusCode >= 400) {
             reject(new Error(`Ollama returned ${res.statusCode}: ${responseBody}`));
           } else {
@@ -50,25 +42,23 @@ function httpPost(url, body, timeout) {
       },
     );
 
-    req.on('error', (err) => {
-      console.log(`    Request error: ${err.message}`);
-      reject(err);
-    });
+    req.on('error', (err) => reject(err));
     req.on('timeout', () => {
-      console.log('    Request timed out');
       req.destroy();
       reject(new Error('TIMEOUT'));
     });
 
     req.write(body);
     req.end();
-    console.log('    Request sent, waiting for response…');
   });
 }
 
 /**
  * Analyze a component graph using an Ollama LLM to produce meaningful
  * architectural groupings.
+ *
+ * Uses CodeBoarding-style approach: pre-cluster with static analysis,
+ * then make small per-cluster LLM calls to name and describe each group.
  *
  * @param {import('../graph/graph-builder.js').GraphData} graphData
  * @param {import('./arch-signals.js').ArchSignals} archSignals
@@ -79,7 +69,7 @@ export async function analyzeWithLlm(graphData, archSignals, options) {
   const {
     ollamaUrl = 'http://10.0.0.15:11434',
     model = 'qwen3:32b',
-    timeout = 600000,
+    timeout = 120000,
     cacheDir = '.lit-graph-cache',
     rootDir = '.',
   } = options;
@@ -92,156 +82,175 @@ export async function analyzeWithLlm(graphData, archSignals, options) {
     return cached;
   }
 
-  // Build the prompt.
-  const isLarge = graphData.nodes.length > 50;
-  const prompt = buildPrompt(graphData, archSignals, rootDir);
-  const approxTokens = Math.ceil(prompt.length / 4);
-  console.log(`    Prompt: ${prompt.length} chars (~${approxTokens} tokens)`);
+  // Step 1: Pre-cluster components by directory (static, instant).
+  const clusters = buildDirectoryClusters(graphData.nodes, rootDir);
+  console.log(`    Pre-clustered into ${clusters.length} directory groups`);
 
-  // Call Ollama.
-  let result = await callOllama(ollamaUrl, model, prompt, timeout);
+  // Step 2: For each cluster, ask the LLM to name and describe it.
+  // Each call is tiny (~100-200 tokens).
+  const groups = [];
+  let completed = 0;
 
-  // For large projects, the LLM returns directory→group mappings.
-  // Convert to standard grouping format by expanding directories to tags.
-  if (isLarge && result.directories) {
-    result = expandDirectoryMapping(result, graphData.nodes, rootDir);
+  for (const cluster of clusters) {
+    completed++;
+    const pct = Math.round((completed / clusters.length) * 100);
+    process.stdout.write(`\r    Naming groups: ${completed}/${clusters.length} (${pct}%)`);
+
+    const prompt = buildClusterPrompt(cluster);
+    try {
+      const named = await callOllama(ollamaUrl, model, prompt, timeout);
+      groups.push({
+        name: named.name || cluster.directory,
+        description: named.description || '',
+        components: cluster.tags,
+      });
+    } catch {
+      // If LLM fails for this cluster, fall back to directory name.
+      groups.push({
+        name: prettifyDirName(cluster.directory),
+        description: `Components from ${cluster.directory}/`,
+        components: cluster.tags,
+      });
+    }
   }
+  console.log(''); // newline after progress
 
-  // Validate and fix the response.
+  const result = { groups };
+
+  // Validate.
   const allTags = new Set(graphData.nodes.map((n) => n.tagName));
-  result = validateGrouping(result, allTags);
+  const validated = validateGrouping(result, allTags);
 
-  // Cache the result.
-  await writeCache(cacheDir, cacheKey, result, {
+  // Cache.
+  await writeCache(cacheDir, cacheKey, validated, {
     model,
     nodeCount: graphData.nodes.length,
   });
 
-  return result;
+  return validated;
 }
 
-// ── Prompt construction ───────────────────────────────────────────
+// ── Static pre-clustering ─────────────────────────────────────────
 
 /**
- * Build the analysis prompt for the LLM.
- *
- * @param {import('../graph/graph-builder.js').GraphData} graphData
- * @param {import('./arch-signals.js').ArchSignals} archSignals
- * @param {string} rootDir
- * @returns {string}
+ * @typedef {object} DirectoryCluster
+ * @property {string} directory
+ * @property {string[]} tags
+ * @property {string[]} childDirs - Subdirectory names if any.
  */
-function buildPrompt(graphData, archSignals, rootDir) {
-  const nodeCount = graphData.nodes.length;
-  const isLarge = nodeCount > 50;
 
-  // Group components by directory.
+/**
+ * Group components by their top-level directory (1-2 levels deep).
+ * Merges small directories into their parent to avoid too many clusters.
+ *
+ * @param {import('../graph/graph-builder.js').GraphNode[]} nodes
+ * @param {string} rootDir
+ * @returns {DirectoryCluster[]}
+ */
+function buildDirectoryClusters(nodes, rootDir) {
+  // Group by full directory path.
   const byDir = {};
-  for (const n of graphData.nodes) {
+  for (const n of nodes) {
     const rel = relative(rootDir, n.filePath).replace(/\\/g, '/');
-    const dir = rel.includes('/') ? rel.substring(0, rel.lastIndexOf('/')) : '(root)';
+    const dir = rel.includes('/') ? dirname(rel) : '(root)';
     if (!byDir[dir]) byDir[dir] = [];
     byDir[dir].push(n.tagName);
   }
 
-  if (isLarge) {
-    // Two-step approach for large projects:
-    // Step 1: Send only directory names + counts to LLM for naming.
-    // Step 2: Map components to groups locally using the directory mapping.
-    // This keeps the prompt tiny regardless of project size.
-    const dirSummary = Object.entries(byDir)
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([dir, tags]) => `  ${dir}/ (${tags.length} components)`);
+  // Merge small directories (< 3 components) into their parent.
+  // This reduces cluster count while keeping meaningful groups.
+  const merged = {};
+  for (const [dir, tags] of Object.entries(byDir)) {
+    let groupDir = dir;
 
-    return `/nothink
-This Lit web component project has ${nodeCount} components across these directories:
+    if (tags.length < 3 && dir !== '(root)') {
+      // Try parent directory.
+      const parent = dirname(dir);
+      if (parent !== '.' && parent !== dir) {
+        groupDir = parent;
+      }
+    }
 
-${dirSummary.join('\n')}
-
-Assign each directory to a logical group. Directories with related purposes should share a group.
-
-Respond with ONLY valid JSON mapping each directory to a group name and description:
-{"directories":{"dir/path":{"group":"Group Name","description":"one line"}}}`;
+    if (!merged[groupDir]) merged[groupDir] = { tags: [], childDirs: new Set() };
+    merged[groupDir].tags.push(...tags);
+    if (groupDir !== dir) merged[groupDir].childDirs.add(dir);
   }
 
-  // Small projects: list everything.
-  const dirLines = Object.entries(byDir)
+  return Object.entries(merged)
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([dir, tags]) => `  ${dir}/: ${tags.join(', ')}`);
+    .map(([dir, data]) => ({
+      directory: dir,
+      tags: data.tags.sort(),
+      childDirs: [...data.childDirs].sort(),
+    }));
+}
 
-  let relationSection = '';
-  const adj = {};
-  for (const e of graphData.edges) {
-    if (!adj[e.source]) adj[e.source] = [];
-    adj[e.source].push(e.target);
-  }
-  const adjLines = Object.entries(adj)
-    .map(([parent, children]) => `  ${parent} -> ${children.join(', ')}`);
-  if (adjLines.length) {
-    relationSection = `\nCOMPONENT TREE:\n${adjLines.join('\n')}\n`;
-  }
+// ── Per-cluster LLM prompt ────────────────────────────────────────
+
+/**
+ * Build a tiny prompt asking the LLM to name one cluster.
+ *
+ * @param {DirectoryCluster} cluster
+ * @returns {string}
+ */
+function buildClusterPrompt(cluster) {
+  const tagList = cluster.tags.length <= 15
+    ? cluster.tags.join(', ')
+    : cluster.tags.slice(0, 10).join(', ') + `, ... (${cluster.tags.length} total)`;
 
   return `/nothink
-Group these ${nodeCount} Lit web components into logical application sections.
+Name this group of Lit web components from the "${cluster.directory}/" directory.
 
-COMPONENTS BY DIRECTORY:
-${dirLines.join('\n')}
-${relationSection}
-RULES:
-- Every component tag must appear in exactly one group
-- Use descriptive group names (e.g. "Authentication", "Dashboard", "Shared UI Kit")
-- Aim for 4-10 groups
+Components: ${tagList}
 
 Respond with ONLY valid JSON:
-{"groups":[{"name":"string","description":"string","components":["tag-name"]}]}`;
+{"name":"Short Group Name","description":"one sentence description"}`;
 }
 
 // ── Ollama API call ───────────────────────────────────────────────
 
 /**
- * Call Ollama's generate API and parse the JSON response.
+ * Call Ollama and parse the JSON response.
  *
  * @param {string} ollamaUrl
  * @param {string} model
  * @param {string} prompt
  * @param {number} timeout
- * @param {boolean} [isRetry]
- * @returns {Promise<LlmGrouping>}
+ * @returns {Promise<object>}
  */
-async function callOllama(ollamaUrl, model, prompt, timeout, isRetry = false) {
-  try {
-    const payload = JSON.stringify({
-      model,
-      messages: [
-        { role: 'user', content: prompt },
-      ],
-      stream: false,
-      format: 'json',
-      keep_alive: '10m',
-      think: false,
-      options: {
-        temperature: 0.3,
-        num_predict: 4096,
-        num_ctx: 8192,
-      },
-    });
+async function callOllama(ollamaUrl, model, prompt, timeout) {
+  const payload = JSON.stringify({
+    model,
+    messages: [{ role: 'user', content: prompt }],
+    stream: false,
+    format: 'json',
+    keep_alive: '10m',
+    think: false,
+    options: {
+      temperature: 0.3,
+      num_predict: 256,
+      num_ctx: 2048,
+    },
+  });
 
+  try {
     const responseText = await httpPost(`${ollamaUrl}/api/chat`, payload, timeout);
     const data = JSON.parse(responseText);
     const content = (data.message && data.message.content) || data.response || '';
 
-    // Parse JSON from the response.
-    const grouping = parseJsonResponse(content);
-    if (grouping) return grouping;
+    // Parse JSON.
+    try {
+      return JSON.parse(content);
+    } catch { /* fall through */ }
 
-    // If parsing failed, retry once with a stricter prompt.
-    if (!isRetry) {
-      console.log('    LLM response was not valid JSON, retrying…');
-      const retryPrompt = prompt +
-        '\n\nYour previous response was not valid JSON. Please respond with ONLY the JSON object, no other text.';
-      return callOllama(ollamaUrl, model, retryPrompt, timeout, true);
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[0]);
+      } catch { /* fall through */ }
     }
 
-    throw new Error('LLM did not return valid JSON after retry');
+    throw new Error('Invalid JSON response');
   } catch (err) {
     const errMsg = err.message || '';
     if (errMsg.includes('TIMEOUT')) {
@@ -262,75 +271,23 @@ async function callOllama(ollamaUrl, model, prompt, timeout, isRetry = false) {
   }
 }
 
-/**
- * Attempt to parse an LLM response string as LlmGrouping JSON.
- *
- * @param {string} text
- * @returns {LlmGrouping|null}
- */
-function parseJsonResponse(text) {
-  // Try direct parse.
-  try {
-    const parsed = JSON.parse(text);
-    if (parsed.groups && Array.isArray(parsed.groups)) return parsed;
-    if (parsed.directories && typeof parsed.directories === 'object') return parsed;
-  } catch { /* fall through */ }
-
-  // Try extracting JSON from markdown fences or surrounding text.
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (parsed.groups && Array.isArray(parsed.groups)) return parsed;
-      if (parsed.directories && typeof parsed.directories === 'object') return parsed;
-    } catch { /* fall through */ }
-  }
-
-  return null;
-}
+// ── Fallback directory name prettifier ────────────────────────────
 
 /**
- * Convert a directory→group mapping from the LLM into the standard
- * LlmGrouping format by expanding each directory to its component tags.
+ * Convert a directory path like "src/components/auth" into "Auth".
  *
- * @param {{ directories: Object<string, { group: string, description: string }> }} dirMapping
- * @param {import('../graph/graph-builder.js').GraphNode[]} nodes
- * @param {string} rootDir
- * @returns {LlmGrouping}
+ * @param {string} dir
+ * @returns {string}
  */
-function expandDirectoryMapping(dirMapping, nodes, rootDir) {
-  // Build directory → tags lookup.
-  const byDir = {};
-  for (const n of nodes) {
-    const rel = relative(rootDir, n.filePath).replace(/\\/g, '/');
-    const dir = rel.includes('/') ? rel.substring(0, rel.lastIndexOf('/')) : '(root)';
-    if (!byDir[dir]) byDir[dir] = [];
-    byDir[dir].push(n.tagName);
-  }
-
-  // Build groups from the LLM's directory assignments.
-  const groupMap = {};
-  for (const [dir, info] of Object.entries(dirMapping.directories)) {
-    const groupName = (info && info.group) || dir;
-    const description = (info && info.description) || '';
-    if (!groupMap[groupName]) {
-      groupMap[groupName] = { name: groupName, description, components: [] };
-    }
-    const tags = byDir[dir] || [];
-    groupMap[groupName].components.push(...tags);
-  }
-
-  return { groups: Object.values(groupMap) };
+function prettifyDirName(dir) {
+  const last = dir.split('/').pop() || dir;
+  return last.charAt(0).toUpperCase() + last.slice(1).replace(/[-_]/g, ' ');
 }
 
 // ── Response validation ───────────────────────────────────────────
 
 /**
- * Validate and fix the LLM grouping to ensure correctness.
- *
- * - Every known tag appears in exactly one group.
- * - No hallucinated tags (tags not in the graph).
- * - Missing tags go to "Uncategorized".
+ * Validate and fix the LLM grouping.
  *
  * @param {LlmGrouping} grouping
  * @param {Set<string>} allTags
@@ -345,11 +302,8 @@ function validateGrouping(grouping, allTags) {
 
     const validComponents = [];
     for (const tag of group.components) {
-      // Skip hallucinated tags.
       if (!allTags.has(tag)) continue;
-      // Skip duplicates (keep first occurrence).
       if (assignedTags.has(tag)) continue;
-
       assignedTags.add(tag);
       validComponents.push(tag);
     }
@@ -363,18 +317,15 @@ function validateGrouping(grouping, allTags) {
     }
   }
 
-  // Add any missing tags to Uncategorized.
   const missing = [];
   for (const tag of allTags) {
-    if (!assignedTags.has(tag)) {
-      missing.push(tag);
-    }
+    if (!assignedTags.has(tag)) missing.push(tag);
   }
 
   if (missing.length > 0) {
     cleanGroups.push({
       name: 'Uncategorized',
-      description: 'Components not assigned to a group by the analysis',
+      description: 'Components not assigned to a group',
       components: missing.sort(),
     });
   }
