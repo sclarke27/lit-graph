@@ -124,84 +124,121 @@ export async function analyzeWithLlm(graphData, archSignals, options) {
  * @returns {string}
  */
 function buildPrompt(graphData, archSignals, rootDir) {
-  // Component list.
-  const componentLines = graphData.nodes.map((n) => {
-    const rel = relative(rootDir, n.filePath).replace(/\\/g, '/');
-    const parts = [`path: ${rel}`, `type: ${n.nodeType}`, `depth: ${n.depth}`];
-    if (n.properties.length) parts.push(`props: ${n.properties.length}`);
-    if (n.internalState.length) parts.push(`state: ${n.internalState.length}`);
-    if (n.eventsDispatched.length) parts.push(`events: [${n.eventsDispatched.join(', ')}]`);
-    return `  - <${n.tagName}> (${parts.join(', ')})`;
-  });
+  const nodeCount = graphData.nodes.length;
+  const isLarge = nodeCount > 50;
 
-  // Relationships. For large graphs, skip binding details to keep prompt manageable.
-  const isLargeGraph = graphData.edges.length > 80;
-  const edgeLines = graphData.edges.map((e) => {
-    if (isLargeGraph) {
-      return `  - <${e.source}> renders <${e.target}>`;
+  // For large projects, group components by directory and show as a tree.
+  // For small projects, list individually.
+  let componentSection;
+
+  if (isLarge) {
+    // Group by directory, just list tag names per directory.
+    const byDir = {};
+    for (const n of graphData.nodes) {
+      const rel = relative(rootDir, n.filePath).replace(/\\/g, '/');
+      const dir = rel.includes('/') ? rel.substring(0, rel.lastIndexOf('/')) : '(root)';
+      if (!byDir[dir]) byDir[dir] = [];
+      byDir[dir].push(n.tagName);
     }
-    const bindings = [];
-    if (e.propBindings.length) bindings.push(`props: ${e.propBindings.join(', ')}`);
-    if (e.eventBindings.length) bindings.push(`events: ${e.eventBindings.join(', ')}`);
-    const suffix = bindings.length ? ` [${bindings.join('; ')}]` : '';
-    return `  - <${e.source}> renders <${e.target}>${suffix}`;
-  });
+    const dirLines = Object.entries(byDir)
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([dir, tags]) => `  ${dir}/: ${tags.join(', ')}`);
+    componentSection = `COMPONENTS BY DIRECTORY (${nodeCount} total):\n${dirLines.join('\n')}`;
+  } else {
+    const componentLines = graphData.nodes.map((n) => {
+      const rel = relative(rootDir, n.filePath).replace(/\\/g, '/');
+      const parts = [`path: ${rel}`, `type: ${n.nodeType}`];
+      if (n.eventsDispatched.length) parts.push(`events: [${n.eventsDispatched.join(', ')}]`);
+      return `  - <${n.tagName}> (${parts.join(', ')})`;
+    });
+    componentSection = `COMPONENTS (${nodeCount} total):\n${componentLines.join('\n')}`;
+  }
 
-  // Architectural signals.
+  // Relationships: for large graphs, show as adjacency list (parent: [children]).
+  let relationSection;
+
+  if (isLarge) {
+    const adj = {};
+    for (const e of graphData.edges) {
+      if (!adj[e.source]) adj[e.source] = [];
+      adj[e.source].push(e.target);
+    }
+    const adjLines = Object.entries(adj)
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([parent, children]) => `  ${parent} -> ${children.join(', ')}`);
+    relationSection = `COMPONENT TREE (${graphData.edges.length} edges):\n${adjLines.join('\n')}`;
+  } else {
+    const edgeLines = graphData.edges.map((e) => {
+      const bindings = [];
+      if (e.propBindings.length) bindings.push(`props: ${e.propBindings.join(', ')}`);
+      if (e.eventBindings.length) bindings.push(`events: ${e.eventBindings.join(', ')}`);
+      const suffix = bindings.length ? ` [${bindings.join('; ')}]` : '';
+      return `  - <${e.source}> renders <${e.target}>${suffix}`;
+    });
+    relationSection = `RELATIONSHIPS (${graphData.edges.length} total):\n${edgeLines.join('\n')}`;
+  }
+
+  // Architectural signals — keep concise.
   const signalLines = [];
 
-  if (archSignals.routes.length) {
-    signalLines.push('Route hosts:');
-    for (const r of archSignals.routes) {
-      const detail = r.hasRouterImport ? '(has router import)' : `(renders ${r.childCount} children)`;
-      signalLines.push(`  - <${r.hostTag}> ${detail} -> [${r.targetTags.join(', ')}]`);
-    }
-  }
-
-  if (archSignals.serviceImports.length) {
-    signalLines.push('Service/API imports:');
-    for (const s of archSignals.serviceImports) {
-      signalLines.push(`  - <${s.tagName}> imports ${s.specifiers.join(', ')} from "${s.importSource}" (${s.category})`);
-    }
-  }
-
   if (archSignals.sharedComponents.length) {
-    signalLines.push('Shared components (used by 3+ parents):');
-    for (const s of archSignals.sharedComponents) {
-      signalLines.push(`  - <${s.tagName}> used by ${s.parentCount} parents: [${s.parentTags.join(', ')}]`);
+    const shared = archSignals.sharedComponents.map((s) => s.tagName);
+    signalLines.push(`Shared components (used by 3+ parents): ${shared.join(', ')}`);
+  }
+
+  if (archSignals.routes.length) {
+    const hosts = archSignals.routes.map((r) => r.hostTag);
+    signalLines.push(`Route hosts: ${hosts.join(', ')}`);
+  }
+
+  // For service imports, summarize by category instead of listing each one.
+  if (archSignals.serviceImports.length) {
+    const byCat = {};
+    for (const s of archSignals.serviceImports) {
+      if (!byCat[s.category]) byCat[s.category] = new Set();
+      byCat[s.category].add(s.tagName);
+    }
+    for (const [cat, tags] of Object.entries(byCat)) {
+      signalLines.push(`Components using ${cat} imports: ${[...tags].join(', ')}`);
     }
   }
 
+  // Path hints — summarize by role.
   if (archSignals.pathHints.length) {
-    signalLines.push('Path-based role hints:');
+    const byRole = {};
     for (const h of archSignals.pathHints) {
-      signalLines.push(`  - <${h.tagName}> -> ${h.inferredRole} (from "${h.segment}/" directory)`);
+      if (!byRole[h.inferredRole]) byRole[h.inferredRole] = [];
+      byRole[h.inferredRole].push(h.tagName);
+    }
+    for (const [role, tags] of Object.entries(byRole)) {
+      signalLines.push(`${role} components: ${tags.join(', ')}`);
     }
   }
+
+  // Build a complete tag list for the LLM to reference.
+  const allTags = graphData.nodes.map((n) => n.tagName).sort();
 
   return `/nothink
-You are analyzing a Lit web component project to understand its architecture.
-Given the component graph and architectural signals below, group the components into logical application sections.
+Group these ${nodeCount} Lit web components into logical application sections.
 
-COMPONENTS (${graphData.nodes.length} total):
-${componentLines.join('\n')}
+${componentSection}
 
-RELATIONSHIPS (${graphData.edges.length} total):
-${edgeLines.join('\n')}
+${relationSection}
 
-ARCHITECTURAL SIGNALS:
-${signalLines.length ? signalLines.join('\n') : '  (none detected)'}
+SIGNALS:
+${signalLines.length ? signalLines.join('\n') : '(none)'}
 
-INSTRUCTIONS:
-- Group these components into logical sections that reflect the app's architecture
-- Use descriptive names like "Authentication", "Dashboard", "Navigation", "Shared UI Kit", "Settings", "Data Visualization", etc.
-- Every component tag must appear in exactly one group
-- Components used across many features should go in a "Shared Components" group
-- Root shell/app components can go in an "App Shell" group
-- Prefer fewer, larger groups over many tiny ones (aim for 3-8 groups)
+ALL TAGS (for reference):
+${allTags.join(', ')}
 
-Respond with ONLY valid JSON, no markdown fences, no explanation:
-{"groups":[{"name":"string","description":"one line description","components":["tag-name"]}]}`;
+RULES:
+- Every tag above must appear in exactly one group
+- Use descriptive group names (e.g. "Authentication", "Dashboard", "Navigation", "Shared UI Kit")
+- Aim for 4-10 groups
+- Components used everywhere go in "Shared Components"
+
+Respond with ONLY valid JSON:
+{"groups":[{"name":"string","description":"string","components":["tag-name"]}]}`;
 }
 
 // ── Ollama API call ───────────────────────────────────────────────
