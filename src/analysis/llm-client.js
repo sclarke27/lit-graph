@@ -127,115 +127,55 @@ function buildPrompt(graphData, archSignals, rootDir) {
   const nodeCount = graphData.nodes.length;
   const isLarge = nodeCount > 50;
 
-  // For large projects, group components by directory and show as a tree.
-  // For small projects, list individually.
-  let componentSection;
-
-  if (isLarge) {
-    // Group by directory, just list tag names per directory.
-    const byDir = {};
-    for (const n of graphData.nodes) {
-      const rel = relative(rootDir, n.filePath).replace(/\\/g, '/');
-      const dir = rel.includes('/') ? rel.substring(0, rel.lastIndexOf('/')) : '(root)';
-      if (!byDir[dir]) byDir[dir] = [];
-      byDir[dir].push(n.tagName);
-    }
-    const dirLines = Object.entries(byDir)
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([dir, tags]) => `  ${dir}/: ${tags.join(', ')}`);
-    componentSection = `COMPONENTS BY DIRECTORY (${nodeCount} total):\n${dirLines.join('\n')}`;
-  } else {
-    const componentLines = graphData.nodes.map((n) => {
-      const rel = relative(rootDir, n.filePath).replace(/\\/g, '/');
-      const parts = [`path: ${rel}`, `type: ${n.nodeType}`];
-      if (n.eventsDispatched.length) parts.push(`events: [${n.eventsDispatched.join(', ')}]`);
-      return `  - <${n.tagName}> (${parts.join(', ')})`;
-    });
-    componentSection = `COMPONENTS (${nodeCount} total):\n${componentLines.join('\n')}`;
+  // Group components by directory — this is the primary input for the LLM.
+  const byDir = {};
+  for (const n of graphData.nodes) {
+    const rel = relative(rootDir, n.filePath).replace(/\\/g, '/');
+    const dir = rel.includes('/') ? rel.substring(0, rel.lastIndexOf('/')) : '(root)';
+    if (!byDir[dir]) byDir[dir] = [];
+    byDir[dir].push(n.tagName);
   }
+  const dirLines = Object.entries(byDir)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([dir, tags]) => `  ${dir}/: ${tags.join(', ')}`);
 
-  // Relationships: for large graphs, show as adjacency list (parent: [children]).
-  let relationSection;
-
-  if (isLarge) {
+  // For small projects, also include the relationship tree.
+  let relationSection = '';
+  if (!isLarge) {
     const adj = {};
     for (const e of graphData.edges) {
       if (!adj[e.source]) adj[e.source] = [];
       adj[e.source].push(e.target);
     }
     const adjLines = Object.entries(adj)
-      .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([parent, children]) => `  ${parent} -> ${children.join(', ')}`);
-    relationSection = `COMPONENT TREE (${graphData.edges.length} edges):\n${adjLines.join('\n')}`;
-  } else {
-    const edgeLines = graphData.edges.map((e) => {
-      const bindings = [];
-      if (e.propBindings.length) bindings.push(`props: ${e.propBindings.join(', ')}`);
-      if (e.eventBindings.length) bindings.push(`events: ${e.eventBindings.join(', ')}`);
-      const suffix = bindings.length ? ` [${bindings.join('; ')}]` : '';
-      return `  - <${e.source}> renders <${e.target}>${suffix}`;
-    });
-    relationSection = `RELATIONSHIPS (${graphData.edges.length} total):\n${edgeLines.join('\n')}`;
+    if (adjLines.length) {
+      relationSection = `\nCOMPONENT TREE:\n${adjLines.join('\n')}\n`;
+    }
   }
 
-  // Architectural signals — keep concise.
+  // Architectural signals — one line each.
   const signalLines = [];
 
   if (archSignals.sharedComponents.length) {
-    const shared = archSignals.sharedComponents.map((s) => s.tagName);
-    signalLines.push(`Shared components (used by 3+ parents): ${shared.join(', ')}`);
+    signalLines.push(`Shared (3+ parents): ${archSignals.sharedComponents.map((s) => s.tagName).join(', ')}`);
   }
-
   if (archSignals.routes.length) {
-    const hosts = archSignals.routes.map((r) => r.hostTag);
-    signalLines.push(`Route hosts: ${hosts.join(', ')}`);
+    signalLines.push(`Route hosts: ${archSignals.routes.map((r) => r.hostTag).join(', ')}`);
   }
-
-  // For service imports, summarize by category instead of listing each one.
-  if (archSignals.serviceImports.length) {
-    const byCat = {};
-    for (const s of archSignals.serviceImports) {
-      if (!byCat[s.category]) byCat[s.category] = new Set();
-      byCat[s.category].add(s.tagName);
-    }
-    for (const [cat, tags] of Object.entries(byCat)) {
-      signalLines.push(`Components using ${cat} imports: ${[...tags].join(', ')}`);
-    }
-  }
-
-  // Path hints — summarize by role.
-  if (archSignals.pathHints.length) {
-    const byRole = {};
-    for (const h of archSignals.pathHints) {
-      if (!byRole[h.inferredRole]) byRole[h.inferredRole] = [];
-      byRole[h.inferredRole].push(h.tagName);
-    }
-    for (const [role, tags] of Object.entries(byRole)) {
-      signalLines.push(`${role} components: ${tags.join(', ')}`);
-    }
-  }
-
-  // Build a complete tag list for the LLM to reference.
-  const allTags = graphData.nodes.map((n) => n.tagName).sort();
 
   return `/nothink
 Group these ${nodeCount} Lit web components into logical application sections.
 
-${componentSection}
-
+COMPONENTS BY DIRECTORY:
+${dirLines.join('\n')}
 ${relationSection}
-
-SIGNALS:
-${signalLines.length ? signalLines.join('\n') : '(none)'}
-
-ALL TAGS (for reference):
-${allTags.join(', ')}
-
+${signalLines.length ? 'SIGNALS:\n' + signalLines.join('\n') + '\n' : ''}
 RULES:
-- Every tag above must appear in exactly one group
-- Use descriptive group names (e.g. "Authentication", "Dashboard", "Navigation", "Shared UI Kit")
+- Every component tag must appear in exactly one group
+- Use descriptive group names (e.g. "Authentication", "Dashboard", "Shared UI Kit")
 - Aim for 4-10 groups
-- Components used everywhere go in "Shared Components"
+- Components in the same directory likely belong together
 
 Respond with ONLY valid JSON:
 {"groups":[{"name":"string","description":"string","components":["tag-name"]}]}`;
